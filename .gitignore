@@ -1,0 +1,5 @@
+.vs
+*.exe
+*.pdb
+*.obj
+refterm_shader.h
