@@ -1,3 +1,14 @@
+/* TODO(casey): Reminders
+
+   1) Probably just double-map the source buffer, that's
+      probably what people should do.
+   2) Split RendererDraw into two things - update and render,
+      since we don't actually have to update anything if
+      the terminal cells don't change.
+   3) Use VirtualAlloc2 for source buffer
+   4) Add actual choice-of-two eviction (w/ AES random)
+*/
+
 #define COBJMACROS
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -10,16 +21,37 @@
 #include <stdint.h>
 #include <intrin.h>
 
+// max cell count in terminal (can be changed to dynamically reize)
+#define REFTERM_MAX_WIDTH 1024
+#define REFTERM_MAX_HEIGHT 1024
+
+// max texture size to store rasterized glyphs (can also be resized, or changed to array texture)
+#define REFTERM_TEXTURE_WIDTH 2048
+#define REFTERM_TEXTURE_HEIGHT 2048
+
+// mapping buffer size (max amoung of glyphs to support in one frame)
+#define REFTERM_MAX_MAPPING 65536
+
+#define Assert(cond) do { if (!(cond)) __debugbreak(); } while (0)
+#define AssertHR(hr) Assert(SUCCEEDED(hr))
+#define ArrayCount(Array) (sizeof(Array) / sizeof((Array)[0]))
+
+#define IsPowerOfTwo(Value) (((Value) & ((Value) - 1)) == 0)
+
 #include "refterm_shader.h"
+#include "refterm_glyph_cache.h"
+#include "refterm_source_buffer.h"
+#include "refterm_glyph_generator.h"
+#include "refterm.h"
+#include "refterm_glyph_cache.c"
+#include "refterm_source_buffer.c"
+#include "refterm_glyph_generator.c"
 
 #pragma comment (lib, "kernel32.lib")
 #pragma comment (lib, "user32.lib")
 #pragma comment (lib, "gdi32.lib")
 #pragma comment (lib, "dxguid.lib")
 #pragma comment (lib, "d3d11.lib")
-
-#define Assert(cond) do { if (!(cond)) __debugbreak(); } while (0)
-#define AssertHR(hr) Assert(SUCCEEDED(hr))
 
 static HANDLE FrameLatencyWaitableObject;
 static IDXGISwapChain2* SwapChain;
@@ -36,43 +68,31 @@ static ID3D11ShaderResourceView* CellView;
 static ID3D11Texture2D* GlyphTexture;
 static ID3D11ShaderResourceView* GlyphTextureView;
 
-static ID3D11Buffer* GlyphMappingBuffer;
-static ID3D11ShaderResourceView* GlyphMappingView;
+static TerminalBuffer AllocateTerminalBuffer(int DimX, int DimY)
+{
+    TerminalBuffer Result = {0};
 
-typedef struct {
-    int Char;
-    uint32_t Foreground;
-    uint32_t Background;
-} TerminalCell;
+    size_t TotalSize = sizeof(TerminalCell)*DimX*DimY;
+    Result.Cells = VirtualAlloc(0, TotalSize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+    if(Result.Cells)
+    {
+        Result.DimX = DimX;
+        Result.DimY = DimY;
+    }
 
-typedef struct {
-    uint32_t CellSize[2];
-    uint32_t TermSize[2];
-} RendererConstBuffer;
+    return Result;
+}
 
-typedef struct {
-    uint32_t GlyphIndex;
-    uint32_t Foreground;
-    uint32_t Background;
-} RendererCell;
+static void DeallocateTerminalBuffer(TerminalBuffer *Buffer)
+{
+    if(Buffer && Buffer->Cells)
+    {
+        VirtualFree(Buffer->Cells, 0, MEM_RELEASE);
+        Buffer->DimX = Buffer->DimY = 0;
+        Buffer->Cells = 0;
+    }
+}
 
-typedef struct {
-    uint32_t Pos[2];
-} GlyphMapping;
-
-// max cell count in terminal (can be changed to dynamically reize)
-#define REFTERM_MAX_WIDTH 1024
-#define REFTERM_MAX_HEIGHT 1024
-
-// max texture size to store rasterized glyphs (can also be resized, or changed to array texture)
-#define REFTERM_TEXTURE_WIDTH 2048
-#define REFTERM_TEXTURE_HEIGHT 2048
-
-// mapping buffer size (max amoung of glyphs to support in one frame)
-#define REFTERM_MAX_MAPPING 65536
-
-static DWORD FontWidth;
-static DWORD FontHeight;
 
 static void RendererCreate(HWND Window)
 {
@@ -194,111 +214,12 @@ static void RendererCreate(HWND Window)
 
     hr = ID3D11Device_CreateShaderResourceView(Device, (ID3D11Resource*)GlyphTexture, NULL, &GlyphTextureView);
     AssertHR(hr);
-
-    // glyph mapping buffer
-
-    D3D11_BUFFER_DESC MappingDesc = {
-        .ByteWidth = REFTERM_MAX_MAPPING * sizeof(GlyphMapping),
-        .Usage = D3D11_USAGE_DEFAULT,
-        .BindFlags = D3D11_BIND_SHADER_RESOURCE,
-        .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED,
-        .StructureByteStride = sizeof(GlyphMapping),
-    };
-    hr = ID3D11Device_CreateBuffer(Device, &MappingDesc, NULL, &GlyphMappingBuffer);
-    AssertHR(hr);
-    
-    D3D11_SHADER_RESOURCE_VIEW_DESC MappingViewDesc = {
-        .ViewDimension = D3D11_SRV_DIMENSION_BUFFER,
-        .Buffer.FirstElement = 0,
-        .Buffer.NumElements = REFTERM_MAX_MAPPING,
-    };
-    hr = ID3D11Device_CreateShaderResourceView(Device, (ID3D11Resource*)GlyphMappingBuffer, &MappingViewDesc, &GlyphMappingView);
-    AssertHR(hr);
-
-    // TEMPORARY - fill in texture & mapping with 128 ASCII symbols rendered with GDI
-    {
-        FontHeight = 20;
-        LPWSTR FontName = L"Consolas";
-        BOOL ClearType = TRUE; // asking for cleartype will make GDI rasterize separate weights for red, green and blue
-
-        BITMAPINFOHEADER BitmapHeader = {
-            .biSize = sizeof(BitmapHeader),
-            .biWidth = REFTERM_TEXTURE_WIDTH,
-            .biHeight = -REFTERM_TEXTURE_HEIGHT,
-            .biPlanes = 1,
-            .biBitCount = 32,
-            .biCompression = BI_RGB,
-        };
-
-        HDC DC = CreateCompatibleDC(0);
-        Assert(DC);
-
-        void* Pixels;
-        HBITMAP Bitmap = CreateDIBSection(DC, &(BITMAPINFO){ BitmapHeader }, DIB_RGB_COLORS, &Pixels, NULL, 0);
-        Assert(Bitmap);
-        SelectObject(DC, Bitmap);
-
-        HFONT Font = CreateFontW(
-            FontHeight, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS,
-            ClearType ? CLEARTYPE_QUALITY : ANTIALIASED_QUALITY, FIXED_PITCH, FontName);
-        Assert(Font);
-        SelectObject(DC, Font);
-
-        TEXTMETRICW Metrics;
-        BOOL ok = GetTextMetricsW(DC, &Metrics);
-        Assert(ok);
-
-        FontWidth = Metrics.tmAveCharWidth + 1; // not sure why +1 is needed here
-
-        SetTextColor(DC, RGB(255, 255, 255));
-        SetBkColor(DC, RGB(0, 0, 0));
-
-        GlyphMapping Mapping[128];
-
-        for (int Index=0; Index<128; Index++)
-        {
-            RECT Rect = { Index*FontWidth, 0, Index*FontWidth + FontWidth, FontHeight };
-            WCHAR Char = (WCHAR)Index;
-            ExtTextOutW(DC, Rect.left, Rect.top, ETO_OPAQUE, &Rect, &Char, 1, NULL);
-
-            Mapping[Index] = (GlyphMapping){ Rect.left, Rect.top };
-        }
-
-        // upload subset of texture to GPU
-        {
-            D3D11_BOX Box = {
-                .left = 0,
-                .right = 128 * FontWidth,
-                .top = 0,
-                .bottom = FontHeight,
-                .front = 0,
-                .back = 1,
-            };
-
-            UINT Pitch = REFTERM_TEXTURE_WIDTH * 4; // RGBA bitmap
-            ID3D11DeviceContext_UpdateSubresource(DeviceContext, (ID3D11Resource*)GlyphTexture, 0, &Box, Pixels, Pitch, 0);
-        }
-
-        // upload subset of mapping to GPU
-        {
-            D3D11_BOX Box = {
-                .left = 0,
-                .right = 128 * sizeof(GlyphMapping),
-                .top = 0,
-                .bottom = 1,
-                .front = 0,
-                .back = 1,
-            };
-
-            ID3D11DeviceContext_UpdateSubresource(DeviceContext, (ID3D11Resource*)GlyphMappingBuffer, 0, &Box, Mapping, 0, 0);
-        }
-    }
 }
 
 static DWORD CurrentWidth;
 static DWORD CurrentHeight;
 
-static void RendererDraw(DWORD Width, DWORD Height, TerminalCell* Terminal, DWORD TermWidth, DWORD TermHeight)
+static void RendererDraw(glyph_generator *GlyphGen, SourceBuffer *Source, GlyphTable *Table, DWORD Width, DWORD Height, TerminalBuffer *Term, size_t FrameIndex)
 {
     HRESULT hr;
 
@@ -339,8 +260,8 @@ static void RendererDraw(DWORD Width, DWORD Height, TerminalCell* Terminal, DWOR
         {
             RendererConstBuffer ConstData =
             {
-                .CellSize = { FontWidth, FontHeight },
-                .TermSize = { TermWidth, TermHeight },
+                .CellSize = { GlyphGen->FontWidth, GlyphGen->FontHeight },
+                .TermSize = { Term->DimX, Term->DimY },
             };
             memcpy(Mapped.pData, &ConstData, sizeof(ConstData));
         }
@@ -351,15 +272,17 @@ static void RendererDraw(DWORD Width, DWORD Height, TerminalCell* Terminal, DWOR
         {
             RendererCell* Cells = Mapped.pData;
 
-            DWORD CellCount = TermWidth * TermHeight;
+            DWORD CellCount = Term->DimX * Term->DimY;
             for (DWORD Index = 0; Index < CellCount; Index++)
             {
-                TerminalCell Cell = Terminal[Index];
+                TerminalCell Cell = Term->Cells[Index];
 
-                uint32_t GlyphIndex = Cell.Char; // TODO: do the mapping here
+                GlyphEntry *Entry = GetOrFillCache(GlyphGen, DeviceContext, Source, Table, Cell.AbsoluteP, Cell.RunCount, Cell.RunHash, FrameIndex);
+                Assert(Cell.TileIndex < Entry->IndexCount);
+                Assert(Cell.TileIndex < ArrayCount(Entry->GPUIndexes));
 
                 *Cells++ = (RendererCell){
-                    .GlyphIndex = GlyphIndex,
+                    .GlyphIndex = Entry->GPUIndexes[Cell.TileIndex],
                     .Foreground = Cell.Foreground,
                     .Background = Cell.Background,
                 };
@@ -368,7 +291,7 @@ static void RendererDraw(DWORD Width, DWORD Height, TerminalCell* Terminal, DWOR
         ID3D11DeviceContext_Unmap(DeviceContext, (ID3D11Resource*)CellBuffer, 0);
 
         // this should match t0/t1/t2 order in hlsl shader
-        ID3D11ShaderResourceView* Resources[] = { CellView, GlyphMappingView, GlyphTextureView };
+        ID3D11ShaderResourceView* Resources[] = { CellView, GlyphTextureView };
 
         ID3D11DeviceContext_CSSetConstantBuffers(DeviceContext, 0, 1, &ConstantBuffer);
         ID3D11DeviceContext_CSSetShaderResources(DeviceContext, 0, ARRAYSIZE(Resources), Resources);
@@ -405,8 +328,57 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
     return DefWindowProcW(Window, Message, WParam, LParam);
 }
 
+static void UpdateExampleGraphemeParser(ExampleParser *Parser, SourceBuffer *Buffer)
+{
+}
+
+static void UpdateTerminalBlahBlah(SourceBuffer *Source, TerminalBuffer *Term)
+{
+    #if 0
+    // TODO(casey): We would like this to maybe be based on
+    // time?
+    int ReadsPerRefresh = 4;
+    for(int ReadIndex = 0;
+        ReadIndex < ReadsPerRefresh;
+        ++ReadIndex)
+    {
+        SourceBufferRange WriteRange = GetLargestWriteRange(&ScrollBackBuffer);
+        if(ReadFromPipe(Pipe, WriteRange.SizeA, WriteRange.DestA))
+        {
+            UpdateExampleGraphemeParser(&Parser, &ScrollBackBuffer, &TerminalBuffer);
+        }
+        else
+        {
+            break;
+        }
+    }
+    #endif
+
+    int CellIndex = 0;
+    for (uint32_t Y = 0; Y < Term->DimY; Y++)
+    {
+        for (uint32_t X = 0; X < Term->DimX; X++)
+        {
+            TerminalCell *Cell = Term->Cells + CellIndex;
+            Cell->Foreground = 0x010305 * (X + Y * 33);
+            Cell->Background = 0x27394b * Y;
+
+            ((WCHAR *)Source->Data)[CellIndex] = CellIndex;
+            Cell->AbsoluteP = 2*CellIndex;
+            Cell->RunCount = 2;
+            Cell->TileIndex = 0;
+
+            Cell->RunHash = ComputeGlyphHash(Source, Cell->AbsoluteP, Cell->RunCount, DefaultSeed);
+        }
+    }
+
+    Source->AbsoluteFilledSize = CellIndex;
+}
+
 void WinMainCRTStartup()
 {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+
     WNDCLASSEXW WindowClass = {
         .cbSize = sizeof(WindowClass),
         .lpfnWndProc = &WindowProc,
@@ -428,48 +400,31 @@ void WinMainCRTStartup()
     Assert(Window);
 
     RendererCreate(Window);
+    glyph_generator GlyphGen = AllocateGlyphGenerator(L"Consolas", 20, GlyphTexture);
     ShowWindow(Window, SW_SHOWDEFAULT);
-
-    // TEMPORARY - dummy terminal, hardcoded sizes, should get it from window size probably
-    #define TermWidth 312
-    #define TermHeight 88
-    static TerminalCell Terminal[TermWidth*TermHeight];
 
     LARGE_INTEGER Frequency, Time;
     QueryPerformanceFrequency(&Frequency);
     QueryPerformanceCounter(&Time);
 
-    uint32_t Frames = 0;
+    size_t FrameCount = 0;
+    size_t FrameIndex = 1;
     int64_t UpdateTitle = Time.QuadPart + Frequency.QuadPart;
+
+    ExampleParser Parser = {0};
+    Parser.LastAbsoluteP = 1;
+    SourceBuffer ScrollBackBuffer = AllocateSourceBuffer(1024*1024);
+
+    GlyphTableParams Params = {0};
+    Params.HashCount = 4096;
+    Params.AssocCount = 16;
+    Params.IndexCount = 65536;
+
+    GlyphTable Table = AllocateGlyphTable(Params, REFTERM_TEXTURE_WIDTH / GlyphGen.FontWidth);
+    TerminalBuffer TermBuffer = {0};
 
     for (;;)
     {
-        // TEMPORARY - update terminal contents
-        {
-            static int Offset = 0;
-            // first row
-            for (int Index = 32; Index < 128; Index++)
-            {
-                Terminal[0 * TermWidth + (Index + Offset) % TermWidth] =
-                    (TerminalCell){ (WCHAR)Index, 0xcccccc, 0x000000 }; // gray on black
-            }
-
-            // random color stuff
-            for (int Y = 1; Y < TermHeight; Y++)
-            {
-                for (int X = 0; X < TermWidth; X++)
-                {
-                    WCHAR Char = (WCHAR)(32 + (X + Y) % (128 - 32));
-                    uint32_t Foreground = 0x010305 * (X + Y * 33);
-                    uint32_t Background = 0x27394b * Y;
-                    Terminal[Y * TermWidth + (X + Offset) % TermWidth] =
-                        (TerminalCell){ Char, Foreground, Background };
-                }
-            }
-        }
-        // uncomment to scroll very fast
-        //Offset = (Offset + 1) % TermWidth;
-
         for (;;)
         {
             HANDLE Events[] = { FrameLatencyWaitableObject };
@@ -497,10 +452,34 @@ void WinMainCRTStartup()
         RECT Rect;
         GetClientRect(Window, &Rect);
 
-        DWORD Width = Rect.right - Rect.left;
-        DWORD Height = Rect.bottom - Rect.top;
-        RendererDraw(Width, Height, Terminal, TermWidth, TermHeight);
-        Frames++;
+        if((Rect.right >= Rect.left) &&
+           (Rect.bottom >= Rect.top))
+        {
+            DWORD Width = Rect.right - Rect.left;
+            DWORD Height = Rect.bottom - Rect.top;
+
+            uint32_t NewDimX = (Width + GlyphGen.FontWidth - 1) / GlyphGen.FontWidth;
+            uint32_t NewDimY = (Height + GlyphGen.FontHeight - 1) / GlyphGen.FontHeight;
+            if(NewDimX > REFTERM_MAX_WIDTH) NewDimX = REFTERM_MAX_WIDTH;
+            if(NewDimY > REFTERM_MAX_HEIGHT) NewDimY = REFTERM_MAX_HEIGHT;
+
+            // TODO(casey): Maybe only allocate on size differences,
+            // etc. Make a real resize function here for people who care.
+            if((TermBuffer.DimX != NewDimX) &&
+               (TermBuffer.DimY != NewDimY))
+            {
+                DeallocateTerminalBuffer(&TermBuffer);
+                TermBuffer = AllocateTerminalBuffer(NewDimX, NewDimY);
+                UpdateTerminalBlahBlah(&ScrollBackBuffer, &TermBuffer);
+            }
+
+            // TODO(casey): Split RendererDraw into two!
+            // Update, and render, since we only need to update
+            // if we actually get new input.
+            RendererDraw(&GlyphGen, &ScrollBackBuffer, &Table, Width, Height, &TermBuffer, FrameIndex);
+            ++FrameIndex;
+            ++FrameCount;
+        }
 
         LARGE_INTEGER Now;
         QueryPerformanceCounter(&Now);
@@ -509,12 +488,12 @@ void WinMainCRTStartup()
         {
             UpdateTitle = Now.QuadPart + Frequency.QuadPart;
 
-            double FramesPerSec = (double)Frames * Frequency.QuadPart / (Now.QuadPart - Time.QuadPart);
+            double FramesPerSec = (double)FrameCount * Frequency.QuadPart / (Now.QuadPart - Time.QuadPart);
             Time = Now;
-            Frames = 0;
+            FrameCount = 0;
 
             WCHAR Title[1024];
-            wsprintfW(Title, L"refterm Size=%dx%d RenderFPS=%d.%02d", TermWidth, TermHeight, (int)FramesPerSec, (int)(FramesPerSec*100) % 100);
+            wsprintfW(Title, L"refterm Size=%dx%d RenderFPS=%d.%02d", TermBuffer.DimX, TermBuffer.DimY, (int)FramesPerSec, (int)(FramesPerSec*100) % 100);
             SetWindowTextW(Window, Title);
         }
     }

@@ -1,0 +1,6 @@
+/* date = June 20th 2021 0:25 am */
+
+#ifndef REFTERM_SOURCE_BUFFER_H
+#define REFTERM_SOURCE_BUFFER_H
+
+#endif //REFTERM_SOURCE_BUFFER_H

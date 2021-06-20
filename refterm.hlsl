@@ -16,10 +16,7 @@ cbuffer ConstBuffer : register(b0)
 // TermSize.x * TermSize.y amount of cells to render as output
 StructuredBuffer<TerminalCell> Cells : register(t0);
 
-// contains x/y coordinate of CellSize rect to take from GlyphTexture
-StructuredBuffer<uint2> GlyphMapping : register(t1);
-
-Texture2D<float3> GlyphTexture : register(t2);
+Texture2D<float3> GlyphTexture : register(t1);
 
 RWTexture2D<float4> Output : register(u0);
 
@@ -29,6 +26,13 @@ float3 GetColor(uint i)
     int g = (i >> 8) & 0xff;
     int b = (i >> 16) & 0xff;
     return float3(r, g, b) / 255.0;
+}
+
+uint2 UnpackGlyphXY(uint GlyphIndex)
+{
+    int x = (GlyphIndex & 0xffff);
+    int y = (GlyphIndex >> 16);
+    return uint2(x, y);
 }
 
 // dispatch with (TermSize*CellSize+7)/8 groups for x,y and 1 for z
@@ -41,7 +45,7 @@ void shader(uint3 Id: SV_DispatchThreadID)
     uint2 CellPos = ScreenPos % CellSize;
 
     TerminalCell Cell = Cells[CellIndex.y * TermSize.x + CellIndex.x];
-    uint2 GlyphPos = GlyphMapping[Cell.GlyphIndex];
+    uint2 GlyphPos = UnpackGlyphXY(Cell.GlyphIndex)*CellSize;
 
     uint2 PixelPos = GlyphPos + CellPos;
     float3 Alpha = GlyphTexture[PixelPos];
