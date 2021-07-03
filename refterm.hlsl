@@ -57,7 +57,7 @@ float4 ComputeOutputColor(uint2 ScreenPos)
     float3 Color = (1-GlyphTexel.a)*Background + GlyphTexel.rgb*Foreground;
 
     // NOTE(casey): Uncomment this to view the cache texture
-    // Color = GlyphTexture[ScreenPos];
+    // Color = GlyphTexture[ScreenPos].rgb;
 
     return float4(Color, 1);
 }
