@@ -1,6 +1,7 @@
 #define COBJMACROS
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
+#define _NO_CRT_STDIO_INLINE
 
 #include <windows.h>
 #include <shlwapi.h>
@@ -145,15 +146,20 @@ void WinMainCRTStartup()
 int _fltused = 0x9875;
 
 #pragma function(memset)
-void* memset(void* Dst, int Src, size_t Size)
+void *memset(void *DestInit, int Source, size_t Size)
 {
-    __stosb((unsigned char*)Dst, (unsigned char)Src, Size);
-    return Dst;
+    unsigned char *Dest = (unsigned char *)DestInit;
+    while(Size--) *Dest++ = (unsigned char)Source;
+
+    return(DestInit);
 }
 
 #pragma function(memcpy)
-void* memcpy(void* Dst, const void* Src, size_t Size)
+void *memcpy(void *DestInit, void const *SourceInit, size_t Size)
 {
-    __movsb((unsigned char*)Dst, (unsigned char*)Src, Size);
-    return Dst;
+    unsigned char *Source = (unsigned char *)SourceInit;
+    unsigned char *Dest = (unsigned char *)DestInit;
+    while(Size--) *Dest++ = *Source++;
+
+    return(DestInit);
 }

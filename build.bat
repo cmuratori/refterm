@@ -21,9 +21,8 @@ set BASE_FILES=refterm.c refterm_example_dwrite.cpp
 call cl -D_DEBUG -Od -Ferefterm_debug_msvc.exe %CFLAGS% %BASE_FILES% /link %LDFLAGS% /subsystem:windows
 call cl -O2 -Ferefterm_release_msvc.exe %CFLAGS% %BASE_FILES% /link %LDFLAGS% /subsystem:windows
 
-REM TODO(casey): Get clang builds working
-REM call clang %CLANGCompileFlags% %CLANGLinkFlags% %BASE_FILES% -o refterm_debug_clang.exe
-REM call clang -O3 %CLANGCompileFlags% %CLANGLinkFlags% %BASE_FILES% -o refterm_release_clang.exe
+call clang %CLANGCompileFlags% %CLANGLinkFlags% %BASE_FILES% -o refterm_debug_clang.exe
+call clang -O3 %CLANGCompileFlags% %CLANGLinkFlags% %BASE_FILES% -o refterm_release_clang.exe
 
-call cl -O2 -Fetest\splat.exe %CFLAGS% splat.cpp /link %LDFLAGS% /subsystem:console
+call cl -O2 -Fesplat.exe %CFLAGS% splat.cpp /link %LDFLAGS% /subsystem:console
 
