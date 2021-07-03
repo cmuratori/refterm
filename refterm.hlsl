@@ -1,8 +1,6 @@
-//
-
 struct TerminalCell
 {
-    uint GlyphIndex; // index into GlyphMapping buffer
+    uint GlyphIndex;
     uint Foreground;
     uint Background;
 };
@@ -11,21 +9,22 @@ cbuffer ConstBuffer : register(b0)
 {
     uint2 CellSize;
     uint2 TermSize;
-}; 
+    uint BlinkModulate;
+    uint Pad0;
+    uint Pad1;
+    uint Pad2;
+};
 
-// TermSize.x * TermSize.y amount of cells to render as output
 StructuredBuffer<TerminalCell> Cells : register(t0);
+Texture2D<float4> GlyphTexture : register(t1);
 
-Texture2D<float3> GlyphTexture : register(t1);
-
-RWTexture2D<float4> Output : register(u0);
-
-float3 GetColor(uint i)
+float3 UnpackColor(uint Packed)
 {
-    int r = i & 0xff;
-    int g = (i >> 8) & 0xff;
-    int b = (i >> 16) & 0xff;
-    return float3(r, g, b) / 255.0;
+    int R = Packed & 0xff;
+    int G = (Packed >> 8) & 0xff;
+    int B = (Packed >> 16) & 0xff;
+
+    return float3(R, G, B) / 255.0;
 }
 
 uint2 UnpackGlyphXY(uint GlyphIndex)
@@ -35,12 +34,8 @@ uint2 UnpackGlyphXY(uint GlyphIndex)
     return uint2(x, y);
 }
 
-// dispatch with (TermSize*CellSize+7)/8 groups for x,y and 1 for z
-[numthreads(8, 8, 1)]
-void shader(uint3 Id: SV_DispatchThreadID)
+float4 ComputeOutputColor(uint2 ScreenPos)
 {
-    uint2 ScreenPos = Id.xy;
-
     uint2 CellIndex = ScreenPos / CellSize;
     uint2 CellPos = ScreenPos % CellSize;
 
@@ -48,13 +43,49 @@ void shader(uint3 Id: SV_DispatchThreadID)
     uint2 GlyphPos = UnpackGlyphXY(Cell.GlyphIndex)*CellSize;
 
     uint2 PixelPos = GlyphPos + CellPos;
-    float3 Alpha = GlyphTexture[PixelPos];
+    float4 GlyphTexel = GlyphTexture[PixelPos];
 
-    float3 Background = GetColor(Cell.Background);
-    float3 Foreground = GetColor(Cell.Foreground);
+    float3 Background = UnpackColor(Cell.Background);
+    float3 Foreground = UnpackColor(Cell.Foreground);
+    float3 Blink = UnpackColor(BlinkModulate);
+
+    float tBlink = float(Cell.Background >> 31);
+    float3 Modulate = lerp(float3(1, 1, 1), Blink, tBlink);
+    Foreground *= Modulate;
 
     // TODO: proper ClearType blending
-    float3 Color = lerp(Background, Foreground, Alpha);
+    float3 Color = lerp(Background, GlyphTexel.rgb*Foreground, GlyphTexel.a);
 
-    Output[ScreenPos] = float4(Color, 1);
+    // NOTE(casey): Uncomment this to view the cache texture
+    // Color = GlyphTexture[ScreenPos];
+
+    return float4(Color, 1);
+}
+
+//
+// NOTE(casey): This is the pixel shader version
+//
+
+float4 VertexMain(uint vI : SV_VERTEXID):SV_POSITION
+{
+    return float4(2.0*(float(vI&1) - 0.5), -(float(vI>>1) - 0.5)*2.0, 0, 1);
+}
+
+float4 PixelMain(float4 ScreenPos:SV_POSITION):SV_TARGET
+{
+    return ComputeOutputColor(ScreenPos.xy);
+}
+
+//
+// NOTE(casey): This is the compute shader version
+//
+
+RWTexture2D<float4> Output : register(u0);
+
+// dispatch with (TermSize*CellSize+7)/8 groups for x,y and 1 for z
+[numthreads(8, 8, 1)]
+void ComputeMain(uint3 Id: SV_DispatchThreadID)
+{
+    uint2 ScreenPos = Id.xy;
+    Output[ScreenPos] = ComputeOutputColor(ScreenPos);
 }
