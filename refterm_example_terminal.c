@@ -475,7 +475,10 @@ static int ParseLineIntoGlyphs(example_terminal *Terminal, uint32_t SourceIndex,
 
             // NOTE(casey): Scan for the next escape code (which Uniscribe helpfully totally fails to handle)
             source_buffer_range SubRange = Range;
-            while(Range.Count && !AtEscape(&Range))
+            while(Range.Count && 
+                  (Range.Data[0] != '\n') &&
+                  (Range.Data[0] != '\r') &&
+                  (Range.Data[0] != '\x1b'))
             {
                 Range = ConsumeCount(Range, 1);
             }
