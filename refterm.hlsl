@@ -54,7 +54,7 @@ float4 ComputeOutputColor(uint2 ScreenPos)
     Foreground *= Modulate;
 
     // TODO: proper ClearType blending
-    float3 Color = lerp(Background, GlyphTexel.rgb*Foreground, GlyphTexel.a);
+    float3 Color = (1-GlyphTexel.a)*Background + GlyphTexel.rgb*Foreground;
 
     // NOTE(casey): Uncomment this to view the cache texture
     // Color = GlyphTexture[ScreenPos];
