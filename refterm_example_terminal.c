@@ -475,7 +475,7 @@ static int ParseLineIntoGlyphs(example_terminal *Terminal, uint32_t SourceIndex,
 
             // NOTE(casey): Scan for the next escape code (which Uniscribe helpfully totally fails to handle)
             source_buffer_range SubRange = Range;
-            while(Range.Count && 
+            while(Range.Count &&
                   (Range.Data[0] != '\n') &&
                   (Range.Data[0] != '\r') &&
                   (Range.Data[0] != '\x1b'))
@@ -633,21 +633,26 @@ static void LayoutLines(example_terminal *Terminal)
     AdvanceRow(Terminal, &Cursor.At);
     ClearProps(&Cursor.Props);
 
+#if 0
     uint32_t CLCount = Terminal->CommandLineCount;
-    Terminal->CommandLine[CLCount++] = '\x1b';
-    Terminal->CommandLine[CLCount++] = '[';
-    Terminal->CommandLine[CLCount++] = '5';
-    Terminal->CommandLine[CLCount++] = 'm';
-    Terminal->CommandLine[CLCount++] = 0xe2;
-    Terminal->CommandLine[CLCount++] = 0x96;
-    Terminal->CommandLine[CLCount++] = 0x88;
 
     source_buffer_range CommandLineRange = {0};
     CommandLineRange.AbsoluteP = 0;
     CommandLineRange.Count = CLCount;
     CommandLineRange.Data = (char *)Terminal->CommandLine;
+#else
+#endif
+    source_buffer_range CommandLineRange = {0};
+    CommandLineRange.Count = Terminal->CommandLineCount;
+    CommandLineRange.Data = Terminal->CommandLine;
     ParseLineIntoGlyphs(Terminal, 1, CommandLineRange, &Cursor, 1);
-
+    
+    char CursorCode[] = {'\x1b', '[', '5',  'm', 0xe2, 0x96, 0x88};
+    source_buffer_range CursorRange = {0};
+    CursorRange.Count = ArrayCount(CursorCode);
+    CursorRange.Data = CursorCode;
+    ParseLineIntoGlyphs(Terminal, 1, CursorRange, &Cursor, 1);
+    
     AdvanceRow(Terminal, &Cursor.At);
     AdvanceRow(Terminal, &Cursor.At);
 
@@ -848,7 +853,7 @@ static void ExecuteCommandLine(example_terminal *Terminal, DWORD PipeSize)
         DWORD NullAt = MultiByteToWideChar(CP_UTF8, 0, B, (DWORD)(Terminal->CommandLineCount - ParamStart),
                                            Terminal->RequestedFontName, ArrayCount(Terminal->RequestedFontName) - 1);
         Terminal->RequestedFontName[NullAt] = 0;
-        
+
         RefreshFont(Terminal);
         AppendOutput(Terminal, "Font: %S\n", Terminal->RequestedFontName);
     }
@@ -904,8 +909,8 @@ static void ExecuteCommandLine(example_terminal *Terminal, DWORD PipeSize)
     }
     else
     {
-        char ProcessName[64];
-        char ProcessCommandLine[128];
+        char ProcessName[ArrayCount(Terminal->CommandLine) + 1];
+        char ProcessCommandLine[ArrayCount(Terminal->CommandLine) + 1];
         wsprintfA(ProcessName, "%s.exe", A);
         wsprintfA(ProcessCommandLine, "%s.exe %s", A, B);
         if(!ExecuteSubProcess(Terminal, ProcessName, ProcessCommandLine, PipeSize))
@@ -1045,7 +1050,10 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
                             char Char = (char)Message.wParam;
                             if((Char >= 32) && (Char <= 127))
                             {
-                                Terminal->CommandLine[Terminal->CommandLineCount++] = Char;
+                                if(Terminal->CommandLineCount < ArrayCount(Terminal->CommandLine))
+                                {
+                                    Terminal->CommandLine[Terminal->CommandLineCount++] = Char;
+                                }
                             }
                         } break;
                     }
