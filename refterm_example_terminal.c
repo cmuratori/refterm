@@ -475,13 +475,14 @@ static int ParseLineIntoGlyphs(example_terminal *Terminal, uint32_t SourceIndex,
 
             // NOTE(casey): Scan for the next escape code (which Uniscribe helpfully totally fails to handle)
             source_buffer_range SubRange = Range;
-            while(Range.Count &&
-                  (Range.Data[0] != '\n') &&
-                  (Range.Data[0] != '\r') &&
-                  (Range.Data[0] != '\x1b'))
+            do
             {
                 Range = ConsumeCount(Range, 1);
-            }
+            } while(Range.Count &&
+                        (Range.Data[0] != '\n') &&
+                        (Range.Data[0] != '\r') &&
+                        (Range.Data[0] != '\x1b'));
+                
 
             // NOTE(casey): Pass the range between the escape codes to Uniscribe
             SubRange.Count = Range.AbsoluteP - SubRange.AbsoluteP;
@@ -934,6 +935,12 @@ static void ExecuteCommandLine(example_terminal *Terminal, DWORD PipeSize)
     }
 }
 
+static int IsUTF8Extension(char A)
+{
+    int Result = ((A & 0xc0) == 0x80);
+    return Result;
+}
+
 static DWORD WINAPI TerminalThread(LPVOID Param)
 {
     example_terminal *Terminal = VirtualAlloc(0, sizeof(example_terminal), MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
@@ -1041,6 +1048,12 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
                     {
                         case VK_BACK:
                         {
+                            while((Terminal->CommandLineCount > 0) &&
+                                      IsUTF8Extension(Terminal->CommandLine[Terminal->CommandLineCount - 1]))
+                            {
+                                --Terminal->CommandLineCount;
+                            }
+                                                        
                             if(Terminal->CommandLineCount > 0)
                             {
                                 --Terminal->CommandLineCount;
@@ -1056,14 +1069,13 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
 
                         default:
                         {
-                            char Char = (char)Message.wParam;
-                            if((Char >= 32) && (Char <= 127))
-                            {
-                                if(Terminal->CommandLineCount < ArrayCount(Terminal->CommandLine))
-                                {
-                                    Terminal->CommandLine[Terminal->CommandLineCount++] = Char;
-                                }
-                            }
+                            wchar_t Char = (wchar_t)Message.wParam;
+                            DWORD SpaceLeft = ArrayCount(Terminal->CommandLine) - Terminal->CommandLineCount;
+                            Terminal->CommandLineCount += 
+                                WideCharToMultiByte(CP_UTF8, 0, 
+                                                    &Char, 1,
+                                                    Terminal->CommandLine + Terminal->CommandLineCount,
+                                                    SpaceLeft, 0, 0);
                         } break;
                     }
                 } break;
