@@ -1,8 +1,3 @@
-#define COBJMACROS
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#define _NO_CRT_STDIO_INLINE
-
 #include <windows.h>
 #include <shlwapi.h>
 #include <d3d11_1.h>

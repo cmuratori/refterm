@@ -1,5 +1,11 @@
-.vs
+.idea/
+.vs/
+build/
+cmake-build-*/
+prefix/
 *.exe
 *.pdb
 *.obj
+CMakeLists.txt.user
+CMakeUserPresets.json
 refterm_shader.h

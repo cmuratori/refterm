@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 14,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "cl",
+      "binaryDir": "${sourceDir}/build/cl",
+      "generator": "Visual Studio 16 2019",
+      "architecture": "x64",
+      "cacheVariables": {
+        "CMAKE_C_FLAGS": "/W3 /GS-",
+        "CMAKE_C_FLAGS_DEBUG": "/Z7 /D _DEBUG /Od",
+        "CMAKE_C_FLAGS_RELEASE": "/O2",
+        "CMAKE_CXX_FLAGS": "/W3 /GS-",
+        "CMAKE_CXX_FLAGS_DEBUG": "/Z7 /D _DEBUG /Od",
+        "CMAKE_CXX_FLAGS_RELEASE": "/O2",
+        "CMAKE_EXE_LINKER_FLAGS_DEBUG": "/INCREMENTAL:NO /opt:icf /opt:ref",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "/INCREMENTAL:NO /opt:icf /opt:ref"
+      }
+    }
+  ]
+}
