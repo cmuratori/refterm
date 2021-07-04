@@ -35,7 +35,7 @@ The rest of the code - refterm_example_*.h/c - is just there to verify that the 
 
 # Fast Pipes
 
-Because Windows' has very serious problems with conio throughput, a conio bypass is included in refterm.  This was necsesary in order to test bandwidth through the terminal, since without bypassing Windows' console conduit, it quickly becomes the bottleneck.
+Because Windows' has very serious problems with conhost throughput, a conhost bypass is included in refterm.  This was necsesary in order to test bandwidth through the terminal, since without bypassing Windows' console conduit, it quickly becomes the bottleneck.
 
 _fast_pipe.h_ is a header file that provides a single macro you can use in any console program to remap the standard handles to faster handles that refterm provides.  You can look at the included _splat.c_ console example program to see how it is used.  Fast pipes are off by default in refterm, but can be turned on by typing "fastpipe" as a command.
 
