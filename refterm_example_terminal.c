@@ -490,7 +490,7 @@ static int ParseLineIntoGlyphs(example_terminal *Terminal, uint32_t SourceIndex,
         else
         {
             // NOTE(casey): It's not an escape, and we know there are only simple characters on the line.
-
+            
             wchar_t CodePoint = GetToken(&Range);
             renderer_cell *Cell = GetCell(&Terminal->ScreenBuffer, Cursor->At);
             if(Cell)
@@ -503,6 +503,15 @@ static int ParseLineIntoGlyphs(example_terminal *Terminal, uint32_t SourceIndex,
                 else
                 {
                     Assert(CodePoint <= 127);
+                    glyph_hash RunHash = ComputeGlyphHash(2, (char unsigned *)&CodePoint, DefaultSeed);
+                    glyph_state Entry = FindGlyphEntryByHash(Terminal->GlyphTable, RunHash);
+                    if(Entry.FilledState != GlyphState_Rasterized)
+                    {
+                        PrepareTilesForTransfer(&Terminal->GlyphGen, &Terminal->Renderer, 1, &CodePoint, 1);
+                        TransferTile(&Terminal->GlyphGen, &Terminal->Renderer, 0, Entry.GPUIndex);
+                        UpdateGlyphCacheEntry(Terminal->GlyphTable, Entry.ID, GlyphState_Rasterized, 1);
+                    }
+                    GPUIndex = Entry.GPUIndex;
                 }
 
                 SetCellDirect(GPUIndex, Cursor->Props, Cell);
