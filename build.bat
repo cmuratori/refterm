@@ -25,4 +25,5 @@ call clang %CLANGCompileFlags% %CLANGLinkFlags% %BASE_FILES% -o refterm_debug_cl
 call clang -O3 %CLANGCompileFlags% %CLANGLinkFlags% %BASE_FILES% -o refterm_release_clang.exe
 
 call cl -O2 -Fesplat.exe %CFLAGS% splat.cpp /link %LDFLAGS% /subsystem:console
+call cl -O2 -Fesplat2.exe %CFLAGS% splat2.cpp /link %LDFLAGS% /subsystem:console
 

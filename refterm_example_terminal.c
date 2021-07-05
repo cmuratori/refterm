@@ -265,8 +265,38 @@ static int ParseEscape(source_buffer_range *Range, cursor_state *Cursor)
 
 static void ParseLines(example_terminal *Terminal, source_buffer_range Range, cursor_state *Cursor)
 {
+    __m128i Carriage = _mm_set1_epi8('\n');
+    __m128i Escape = _mm_set1_epi8('\x1b');
+    __m128i Complex = _mm_set1_epi8(0x80);
+    
     while(Range.Count)
     {
+        __m128i ContainsComplex = _mm_setzero_si128();
+        while(Range.Count >= 16)
+        {
+            __m128i Batch = _mm_loadu_si128((__m128i *)Range.Data);
+            __m128i TestC = _mm_cmpeq_epi8(Batch, Carriage);
+            __m128i TestE = _mm_cmpeq_epi8(Batch, Escape);
+            __m128i TestX = _mm_and_si128(Batch, Complex);
+            __m128i Test = _mm_or_si128(TestC, TestE);
+            int Check = _mm_movemask_epi8(Test);
+            if(Check)
+            {
+                int Advance = _tzcnt_u32(Check);               
+                __m128i MaskX = _mm_loadu_si128((__m128i *)(OverhangMask + 16 - Advance));
+                TestX = _mm_and_si128(MaskX, TestX);
+                ContainsComplex = _mm_or_si128(ContainsComplex, TestX);
+                Range = ConsumeCount(Range, Advance);
+                break;
+            }
+
+            ContainsComplex = _mm_or_si128(ContainsComplex, TestX);
+            Range = ConsumeCount(Range, 16);
+        }
+        
+        Terminal->Lines[Terminal->CurrentLineIndex].ContainsComplexChars |= 
+            _mm_movemask_epi8(ContainsComplex);
+        
         if(AtEscape(&Range))
         {
             size_t FeedAt = Range.AbsoluteP;
@@ -577,7 +607,7 @@ static int UpdateTerminalBuffer(example_terminal *Terminal, HANDLE FromPipe)
     if(PendingCount)
     {
         source_buffer_range Dest = GetNextWritableRange(&Terminal->ScrollBackBuffer, PendingCount);
-
+        
         DWORD ReadCount = 0;
         if(ReadFile(FromPipe, Dest.Data, (DWORD)Dest.Count, &ReadCount, 0))
         {
@@ -594,7 +624,7 @@ static int UpdateTerminalBuffer(example_terminal *Terminal, HANDLE FromPipe)
             Result = 0;
         }
     }
-
+    
     return Result;
 }
 
