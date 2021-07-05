@@ -1034,6 +1034,8 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
     size_t FrameIndex = 0;
     int64_t UpdateTitle = Time.QuadPart + Frequency.QuadPart;
 
+    wchar_t LastChar = 0;
+
     while(!Terminal->Quit)
     {
         MSG Message;
@@ -1100,12 +1102,38 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
                         default:
                         {
                             wchar_t Char = (wchar_t)Message.wParam;
-                            DWORD SpaceLeft = ArrayCount(Terminal->CommandLine) - Terminal->CommandLineCount;
-                            Terminal->CommandLineCount += 
-                                WideCharToMultiByte(CP_UTF8, 0, 
-                                                    &Char, 1,
-                                                    Terminal->CommandLine + Terminal->CommandLineCount,
-                                                    SpaceLeft, 0, 0);
+                            wchar_t Chars[2];
+                            int CharCount = 0;
+
+                            if(IS_HIGH_SURROGATE(Char))
+                            {
+                                LastChar = Char;
+                            }
+                            else if(IS_LOW_SURROGATE(Char))
+                            {
+                                if(IS_SURROGATE_PAIR(LastChar, Char))
+                                {
+                                    Chars[0] = LastChar;
+                                    Chars[1] = Char;
+                                    CharCount = 2;
+                                }
+                                LastChar = 0;
+                            }
+                            else
+                            {
+                                Chars[0] = Char;
+                                CharCount = 1;
+                            }
+
+                            if(CharCount)
+                            {
+                                DWORD SpaceLeft = ArrayCount(Terminal->CommandLine) - Terminal->CommandLineCount;
+                                Terminal->CommandLineCount +=
+                                    WideCharToMultiByte(CP_UTF8, 0,
+                                                        Chars, CharCount,
+                                                        Terminal->CommandLine + Terminal->CommandLineCount,
+                                                        SpaceLeft, 0, 0);
+                            }
                         } break;
                     }
                 } break;
