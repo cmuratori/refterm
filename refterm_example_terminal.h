@@ -76,15 +76,18 @@ typedef struct
     HANDLE Legacy_ReadStdError;
 
     int EnableFastPipe;
+    HANDLE FastPipeReady;
     HANDLE FastPipe;
+    OVERLAPPED FastPipeTrigger;
     
     HANDLE ChildProcess;
- 
+        
     cursor_state RunningCursor;
     
     uint32_t CommandLineCount;
     char CommandLine[256];
     
+    int NoThrottle;
     int DebugHighlighting;
     
     uint32_t MaxLineCount;
@@ -99,6 +102,9 @@ typedef struct
     int RequestClearType;
     int RequestDirectWrite;
     int LineWrap;
+    
+    uint32_t DefaultForegroundColor;
+    uint32_t DefaultBackgroundColor;
     
     uint32_t REFTERM_TEXTURE_WIDTH;
     uint32_t REFTERM_TEXTURE_HEIGHT;

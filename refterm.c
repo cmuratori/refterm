@@ -42,6 +42,8 @@
 #pragma comment (lib, "d2d1")
 #pragma comment (lib, "mincore")
 
+DWORD RenderThreadID = 0;
+
 static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
 {
     LRESULT Result = 0;
@@ -52,6 +54,12 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         case WM_DESTROY:
         {
             PostQuitMessage(0);
+        } break;
+        
+        case WM_CHAR:
+        case WM_SIZE:
+        {
+            PostThreadMessage(RenderThreadID, Message, WParam, LParam);
         } break;
 
         default:
@@ -120,7 +128,6 @@ void WinMainCRTStartup()
     HWND Window = CreateOutputWindow();
     Assert(IsWindow(Window));
 
-    DWORD RenderThreadID;
     CreateThread(0, 0, TerminalThread, Window, 0, &RenderThreadID);
 
     for(;;)
@@ -130,7 +137,8 @@ void WinMainCRTStartup()
         TranslateMessage(&Message);
         if((Message.message == WM_CHAR) ||
            (Message.message == WM_KEYDOWN) ||
-           (Message.message == WM_QUIT))
+           (Message.message == WM_QUIT) ||
+           (Message.message == WM_SIZE))
         {
             PostThreadMessage(RenderThreadID, Message.message, Message.wParam, Message.lParam);
         }

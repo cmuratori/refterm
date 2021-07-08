@@ -72,7 +72,7 @@ static IDXGISwapChain2 *AcquireDXGISwapChain(ID3D11Device *Device, HWND Window, 
                 .SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 .Scaling = DXGI_SCALING_NONE,
                 .AlphaMode = DXGI_ALPHA_MODE_IGNORE,
-                .Flags = 0, // DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+                .Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
             };
 
             if(UseComputeShader)
@@ -149,6 +149,8 @@ static void SetD3D11MaxCellCount(d3d11_renderer *Renderer, uint32_t Count)
 
             ID3D11Device_CreateShaderResourceView(Renderer->Device, (ID3D11Resource *)Renderer->CellBuffer, &CellViewDesc, &Renderer->CellView);
         }
+        
+        Renderer->MaxCellCount = Count;
     }
 }
 
@@ -170,7 +172,7 @@ static void ReleaseD3DGlyphCache(d3d11_renderer *Renderer)
 static void ReleaseD3DGlyphTransfer(d3d11_renderer *Renderer)
 {
     D2DRelease(&Renderer->DWriteRenderTarget, &Renderer->DWriteFillBrush);
-    
+
     if(Renderer->GlyphTransfer)
     {
         ID3D11ShaderResourceView_Release(Renderer->GlyphTransfer);
@@ -218,7 +220,7 @@ static void SetD3D11GlyphCacheDim(d3d11_renderer *Renderer, uint32_t Width, uint
 static void SetD3D11GlyphTransferDim(d3d11_renderer *Renderer, uint32_t Width, uint32_t Height)
 {
     ReleaseD3DGlyphTransfer(Renderer);
-    
+
     if(Renderer->Device)
     {
         D3D11_TEXTURE2D_DESC TextureDesc =
@@ -237,7 +239,7 @@ static void SetD3D11GlyphTransferDim(d3d11_renderer *Renderer, uint32_t Width, u
         {
             ID3D11Device_CreateShaderResourceView(Renderer->Device, (ID3D11Resource *)Renderer->GlyphTransfer, 0, &Renderer->GlyphTransferView);
             ID3D11Texture2D_QueryInterface(Renderer->GlyphTransfer, &IID_IDXGISurface, (void **)&Renderer->GlyphTransferSurface);
-            
+
             D2DAcquire(Renderer->GlyphTransferSurface,
                        &Renderer->DWriteRenderTarget,
                        &Renderer->DWriteFillBrush);
@@ -269,7 +271,7 @@ static void ReleaseD3D11Renderer(d3d11_renderer *Renderer)
     ReleaseD3DGlyphCache(Renderer);
     ReleaseD3DGlyphTransfer(Renderer);
     ReleaseD3D11RenderTargets(Renderer);
-    
+
     if(Renderer->ComputeShader) ID3D11ComputeShader_Release(Renderer->ComputeShader);
     if(Renderer->PixelShader) ID3D11ComputeShader_Release(Renderer->PixelShader);
     if(Renderer->VertexShader) ID3D11ComputeShader_Release(Renderer->VertexShader);
@@ -318,7 +320,7 @@ static d3d11_renderer AcquireD3D11Renderer(HWND Window, int EnableDebugging)
             Result.SwapChain = AcquireDXGISwapChain(Result.Device, Window, 0);
             if(Result.SwapChain)
             {
-                // Result.FrameLatencyWaitableObject = IDXGISwapChain2_GetFrameLatencyWaitableObject(Result.SwapChain);
+                Result.FrameLatencyWaitableObject = IDXGISwapChain2_GetFrameLatencyWaitableObject(Result.SwapChain);
 
                 D3D11_BUFFER_DESC ConstantBufferDesc =
                 {
@@ -365,7 +367,7 @@ static void RendererDraw(example_terminal *Terminal, uint32_t Width, uint32_t He
 
         if (Width != 0 && Height != 0)
         {
-            hr = IDXGISwapChain_ResizeBuffers(Renderer->SwapChain, 0, Width, Height, DXGI_FORMAT_UNKNOWN, 0); // DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
+            hr = IDXGISwapChain_ResizeBuffers(Renderer->SwapChain, 0, Width, Height, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
             AssertHR(hr);
 
             ID3D11Texture2D *Buffer;
@@ -400,6 +402,12 @@ static void RendererDraw(example_terminal *Terminal, uint32_t Width, uint32_t He
         Renderer->CurrentHeight = Height;
     }
 
+    uint32_t CellCount = Renderer->CurrentWidth*Renderer->CurrentHeight;
+    if(Renderer->MaxCellCount < CellCount)
+    {
+        SetD3D11MaxCellCount(Renderer, CellCount);
+    }
+        
     if(Renderer->RenderView || Renderer->RenderTarget)
     {
         D3D11_MAPPED_SUBRESOURCE Mapped;
@@ -410,7 +418,9 @@ static void RendererDraw(example_terminal *Terminal, uint32_t Width, uint32_t He
             {
                 .CellSize = { GlyphGen->FontWidth, GlyphGen->FontHeight },
                 .TermSize = { Term->DimX, Term->DimY },
+                .TopLeftMargin = {8, 8},
                 .BlinkModulate = BlinkModulate,
+                .MarginColor = 0x000c0c0c,
             };
             memcpy(Mapped.pData, &ConstData, sizeof(ConstData));
         }
@@ -439,7 +449,7 @@ static void RendererDraw(example_terminal *Terminal, uint32_t Width, uint32_t He
             ID3D11DeviceContext_CSSetShaderResources(Renderer->DeviceContext, 0, ARRAYSIZE(Resources), Resources);
             ID3D11DeviceContext_CSSetUnorderedAccessViews(Renderer->DeviceContext, 0, 1, &Renderer->RenderView, NULL);
             ID3D11DeviceContext_CSSetShader(Renderer->DeviceContext, Renderer->ComputeShader, 0, 0);
-            ID3D11DeviceContext_Dispatch(Renderer->DeviceContext, (Width + 7) / 8, (Height + 7) / 8, 1);
+            ID3D11DeviceContext_Dispatch(Renderer->DeviceContext, (Renderer->CurrentWidth + 7) / 8, (Renderer->CurrentHeight + 7) / 8, 1);
         }
         else
         {

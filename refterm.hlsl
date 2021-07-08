@@ -9,10 +9,9 @@ cbuffer ConstBuffer : register(b0)
 {
     uint2 CellSize;
     uint2 TermSize;
+    uint2 TopLeftMargin;
     uint BlinkModulate;
-    uint Pad0;
-    uint Pad1;
-    uint Pad2;
+    uint MarginColor;
 };
 
 StructuredBuffer<TerminalCell> Cells : register(t0);
@@ -36,30 +35,41 @@ uint2 UnpackGlyphXY(uint GlyphIndex)
 
 float4 ComputeOutputColor(uint2 ScreenPos)
 {
-    uint2 CellIndex = ScreenPos / CellSize;
-    uint2 CellPos = ScreenPos % CellSize;
+    uint2 CellIndex = (ScreenPos - TopLeftMargin) / CellSize;
+    uint2 CellPos = (ScreenPos - TopLeftMargin) % CellSize;
 
-    TerminalCell Cell = Cells[CellIndex.y * TermSize.x + CellIndex.x];
-    uint2 GlyphPos = UnpackGlyphXY(Cell.GlyphIndex)*CellSize;
+    float3 Result;
+    if((ScreenPos.x >= TopLeftMargin.x) &&
+       (ScreenPos.y >= TopLeftMargin.y) &&
+       (CellIndex.x < TermSize.x) &&
+       (CellIndex.y < TermSize.y))
+    {
+        TerminalCell Cell = Cells[CellIndex.y * TermSize.x + CellIndex.x];
+        uint2 GlyphPos = UnpackGlyphXY(Cell.GlyphIndex)*CellSize;
 
-    uint2 PixelPos = GlyphPos + CellPos;
-    float4 GlyphTexel = GlyphTexture[PixelPos];
+        uint2 PixelPos = GlyphPos + CellPos;
+        float4 GlyphTexel = GlyphTexture[PixelPos];
 
-    float3 Background = UnpackColor(Cell.Background);
-    float3 Foreground = UnpackColor(Cell.Foreground);
-    float3 Blink = UnpackColor(BlinkModulate);
+        float3 Background = UnpackColor(Cell.Background);
+        float3 Foreground = UnpackColor(Cell.Foreground);
+        float3 Blink = UnpackColor(BlinkModulate);
 
-    float tBlink = float(Cell.Background >> 31);
-    float3 Modulate = lerp(float3(1, 1, 1), Blink, tBlink);
-    Foreground *= Modulate;
+        float tBlink = float(Cell.Background >> 31);
+        float3 Modulate = lerp(float3(1, 1, 1), Blink, tBlink);
+        Foreground *= Modulate;
 
-    // TODO: proper ClearType blending
-    float3 Color = (1-GlyphTexel.a)*Background + GlyphTexel.rgb*Foreground;
+        // TODO: proper ClearType blending
+        Result = (1-GlyphTexel.a)*Background + GlyphTexel.rgb*Foreground;
+    }
+    else
+    {
+        Result = UnpackColor(MarginColor);
+    }
 
     // NOTE(casey): Uncomment this to view the cache texture
-    // Color = GlyphTexture[ScreenPos].rgb;
+    // Result = GlyphTexture[ScreenPos].rgb;
 
-    return float4(Color, 1);
+    return float4(Result, 1);
 }
 
 //

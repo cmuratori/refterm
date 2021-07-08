@@ -135,16 +135,33 @@ static renderer_cell *GetCell(terminal_buffer *Buffer, terminal_point Point)
     return Result;
 }
 
-static void ClearLine(terminal_buffer *Buffer, int32_t Y)
+static void ClearCellCount(example_terminal *Terminal, int32_t Count, renderer_cell *Cell)
+{
+    uint32_t Background = Terminal->DefaultBackgroundColor;
+    while(Count--)
+    {
+        Cell->GlyphIndex = 0;
+        Cell->Foreground = Background; // TODO(casey): Should be able to set this to 0, but need to make sure cache slot 0 never gets filled
+        Cell->Background = Background;
+        ++Cell;
+    }
+}
+
+static void ClearLine(example_terminal *Terminal, terminal_buffer *Buffer, int32_t Y)
 {
     terminal_point Point = {0, Y};
     if(IsInBounds(Buffer, Point))
     {
-        memset(GetCell(Buffer, Point), 0, Buffer->DimX*sizeof(renderer_cell));
+        ClearCellCount(Terminal, Buffer->DimX, GetCell(Buffer, Point));
     }
 }
 
-static void AdvanceRow(example_terminal *Terminal, terminal_point *Point)
+static void Clear(example_terminal *Terminal, terminal_buffer *Buffer)
+{
+    ClearCellCount(Terminal, Buffer->DimX*Buffer->DimY, Buffer->Cells);
+}
+
+static void AdvanceRowNoClear(example_terminal *Terminal, terminal_point *Point)
 {
     Point->X = 0;
     ++Point->Y;
@@ -152,8 +169,12 @@ static void AdvanceRow(example_terminal *Terminal, terminal_point *Point)
     {
         Point->Y = 0;
     }
+}
 
-    ClearLine(&Terminal->ScreenBuffer, Point->Y);
+static void AdvanceRow(example_terminal *Terminal, terminal_point *Point)
+{
+    AdvanceRowNoClear(Terminal, Point);
+    ClearLine(Terminal, &Terminal->ScreenBuffer, Point->Y);
 }
 
 static void AdvanceColumn(example_terminal *Terminal, terminal_point *Point)
@@ -178,26 +199,21 @@ static void SetCellDirect(gpu_glyph_index GPUIndex, glyph_props Props, renderer_
     Dest->Background = Background;
 }
 
-static void Clear(terminal_buffer *Buffer)
+static void ClearProps(example_terminal *Terminal, glyph_props *Props)
 {
-    memset(Buffer->Cells, 0, Buffer->DimX*Buffer->DimY*sizeof(renderer_cell));
-}
-
-static void ClearProps(glyph_props *Props)
-{
-    Props->Foreground = 0xffffffff;
-    Props->Background = 0x00000000;
+    Props->Foreground = Terminal->DefaultForegroundColor;
+    Props->Background = Terminal->DefaultBackgroundColor;
     Props->Flags = 0;
 }
 
-static void ClearCursor(cursor_state *Cursor)
+static void ClearCursor(example_terminal *Terminal, cursor_state *Cursor)
 {
     Cursor->At.X = 0;
     Cursor->At.Y = 0;
-    ClearProps(&Cursor->Props);
+    ClearProps(Terminal, &Cursor->Props);
 }
 
-static int ParseEscape(source_buffer_range *Range, cursor_state *Cursor)
+static int ParseEscape(example_terminal *Terminal, source_buffer_range *Range, cursor_state *Cursor)
 {
     int MovedCursor = 0;
 
@@ -241,9 +257,7 @@ static int ParseEscape(source_buffer_range *Range, cursor_state *Cursor)
             // NOTE(casey): Set graphics mode
             if(Params[0] == 0)
             {
-                Cursor->Props.Foreground = 0xffffffff;
-                Cursor->Props.Background = 0x00000000;
-                Cursor->Props.Flags = 0;
+                ClearProps(Terminal, &Cursor->Props);
             }
 
             if(Params[0] == 1) Cursor->Props.Flags |= TerminalCell_Bold;
@@ -268,7 +282,7 @@ static void ParseLines(example_terminal *Terminal, source_buffer_range Range, cu
     __m128i Carriage = _mm_set1_epi8('\n');
     __m128i Escape = _mm_set1_epi8('\x1b');
     __m128i Complex = _mm_set1_epi8(0x80);
-    
+
     while(Range.Count)
     {
         __m128i ContainsComplex = _mm_setzero_si128();
@@ -282,7 +296,7 @@ static void ParseLines(example_terminal *Terminal, source_buffer_range Range, cu
             int Check = _mm_movemask_epi8(Test);
             if(Check)
             {
-                int Advance = _tzcnt_u32(Check);               
+                int Advance = _tzcnt_u32(Check);
                 __m128i MaskX = _mm_loadu_si128((__m128i *)(OverhangMask + 16 - Advance));
                 TestX = _mm_and_si128(MaskX, TestX);
                 ContainsComplex = _mm_or_si128(ContainsComplex, TestX);
@@ -293,14 +307,14 @@ static void ParseLines(example_terminal *Terminal, source_buffer_range Range, cu
             ContainsComplex = _mm_or_si128(ContainsComplex, TestX);
             Range = ConsumeCount(Range, 16);
         }
-        
-        Terminal->Lines[Terminal->CurrentLineIndex].ContainsComplexChars |= 
+
+        Terminal->Lines[Terminal->CurrentLineIndex].ContainsComplexChars |=
             _mm_movemask_epi8(ContainsComplex);
-        
+
         if(AtEscape(&Range))
         {
             size_t FeedAt = Range.AbsoluteP;
-            if(ParseEscape(&Range, Cursor))
+            if(ParseEscape(Terminal, &Range, Cursor))
             {
                 LineFeed(Terminal, FeedAt, FeedAt, Cursor->Props);
             }
@@ -321,7 +335,7 @@ static void ParseLines(example_terminal *Terminal, source_buffer_range Range, cu
     UpdateLineEnd(Terminal, Range.AbsoluteP);
 }
 
-static void ParseWithUniscribe(example_terminal *Terminal, uint32_t SourceIndex, source_buffer_range UTF8Range, cursor_state *Cursor)
+static void ParseWithUniscribe(example_terminal *Terminal, source_buffer_range UTF8Range, cursor_state *Cursor)
 {
     /* TODO(casey): This code is absolutely horrible - Uniscribe is basically unusable as an API, because it doesn't support
        a clean state-machine way of feeding things to it.  So I don't even know how you would really use it in a way
@@ -470,7 +484,7 @@ static void ParseWithUniscribe(example_terminal *Terminal, uint32_t SourceIndex,
     }
 }
 
-static int ParseLineIntoGlyphs(example_terminal *Terminal, uint32_t SourceIndex, source_buffer_range Range,
+static int ParseLineIntoGlyphs(example_terminal *Terminal, source_buffer_range Range,
                                 cursor_state *Cursor, int ContainsComplexChars)
 {
     int CursorJumped = 0;
@@ -481,7 +495,7 @@ static int ParseLineIntoGlyphs(example_terminal *Terminal, uint32_t SourceIndex,
         char Peek = PeekToken(&Range, 0);
         if((Peek == '\x1b') && AtEscape(&Range))
         {
-            if(ParseEscape(&Range, Cursor))
+            if(ParseEscape(Terminal, &Range, Cursor))
             {
                 CursorJumped = 1;
             }
@@ -512,16 +526,16 @@ static int ParseLineIntoGlyphs(example_terminal *Terminal, uint32_t SourceIndex,
                         (Range.Data[0] != '\n') &&
                         (Range.Data[0] != '\r') &&
                         (Range.Data[0] != '\x1b'));
-                
+
 
             // NOTE(casey): Pass the range between the escape codes to Uniscribe
             SubRange.Count = Range.AbsoluteP - SubRange.AbsoluteP;
-            ParseWithUniscribe(Terminal, SourceIndex, SubRange, Cursor);
+            ParseWithUniscribe(Terminal, SubRange, Cursor);
         }
         else
         {
             // NOTE(casey): It's not an escape, and we know there are only simple characters on the line.
-            
+
             wchar_t CodePoint = GetToken(&Range);
             renderer_cell *Cell = GetCell(&Terminal->ScreenBuffer, Cursor->At);
             if(Cell)
@@ -599,32 +613,39 @@ static void AppendOutput(example_terminal *Terminal, char *Format, ...)
 
 static int UpdateTerminalBuffer(example_terminal *Terminal, HANDLE FromPipe)
 {
-    int Result = 1;
+    int Result = 0;
 
-    terminal_buffer *Term = &Terminal->ScreenBuffer;
-
-    DWORD PendingCount = GetPipePendingDataCount(FromPipe);
-    if(PendingCount)
+    if(FromPipe != INVALID_HANDLE_VALUE)
     {
-        source_buffer_range Dest = GetNextWritableRange(&Terminal->ScrollBackBuffer, PendingCount);
-        
-        DWORD ReadCount = 0;
-        if(ReadFile(FromPipe, Dest.Data, (DWORD)Dest.Count, &ReadCount, 0))
+        Result = 1;
+
+        terminal_buffer *Term = &Terminal->ScreenBuffer;
+
+        DWORD PendingCount = GetPipePendingDataCount(FromPipe);
+        if(PendingCount)
         {
-            Assert(ReadCount <= Dest.Count);
-            Dest.Count = ReadCount;
-            CommitWrite(&Terminal->ScrollBackBuffer, Dest.Count);
-            ParseLines(Terminal, Dest, &Terminal->RunningCursor);
+            source_buffer_range Dest = GetNextWritableRange(&Terminal->ScrollBackBuffer, PendingCount);
+
+            DWORD ReadCount = 0;
+            if(ReadFile(FromPipe, Dest.Data, (DWORD)Dest.Count, &ReadCount, 0))
+            {
+                Assert(ReadCount <= Dest.Count);
+                Dest.Count = ReadCount;
+                CommitWrite(&Terminal->ScrollBackBuffer, Dest.Count);
+                ParseLines(Terminal, Dest, &Terminal->RunningCursor);
+            }
+        }
+        else
+        {
+            DWORD Error = GetLastError();
+            if((Error == ERROR_BROKEN_PIPE) ||
+               (Error == ERROR_INVALID_HANDLE))
+            {
+                Result = 0;
+            }
         }
     }
-    else
-    {
-        if(GetLastError() == ERROR_BROKEN_PIPE)
-        {
-            Result = 0;
-        }
-    }
-    
+
     return Result;
 }
 
@@ -633,8 +654,8 @@ static void LayoutLines(example_terminal *Terminal)
     // TODO(casey): Probably want to do something better here - this over-clears, since we clear
     // the whole thing and then also each line, for no real reason other than to make line wrapping
     // simpler.
-    Clear(&Terminal->ScreenBuffer);
-
+    Clear(Terminal, &Terminal->ScreenBuffer);
+    
     //
     // TODO(casey): This code is super bad, and there's no need for it to keep repeating itself.
     //
@@ -646,7 +667,7 @@ static void LayoutLines(example_terminal *Terminal)
     int CursorJumped = 0;
 
     cursor_state Cursor = {0};
-    ClearCursor(&Cursor);
+    ClearCursor(Terminal, &Cursor);
     for(int32_t LineIndexIndex = 0;
         LineIndexIndex < LineCount;
         ++LineIndexIndex)
@@ -658,7 +679,7 @@ static void LayoutLines(example_terminal *Terminal)
 
         source_buffer_range Range = ReadSourceAt(&Terminal->ScrollBackBuffer, Line.FirstP, Line.OnePastLastP - Line.FirstP);
         Cursor.Props = Line.StartingProps;
-        if(ParseLineIntoGlyphs(Terminal, 0, Range, &Cursor, Line.ContainsComplexChars))
+        if(ParseLineIntoGlyphs(Terminal, Range, &Cursor, Line.ContainsComplexChars))
         {
             CursorJumped = 1;
         }
@@ -671,7 +692,7 @@ static void LayoutLines(example_terminal *Terminal)
     }
 
     AdvanceRow(Terminal, &Cursor.At);
-    ClearProps(&Cursor.Props);
+    ClearProps(Terminal, &Cursor.Props);
 
 #if 0
     uint32_t CLCount = Terminal->CommandLineCount;
@@ -682,19 +703,23 @@ static void LayoutLines(example_terminal *Terminal)
     CommandLineRange.Data = (char *)Terminal->CommandLine;
 #else
 #endif
+    char Prompt[] = {'>', ' '};
+    source_buffer_range PromptRange = {0};
+    PromptRange.Count = ArrayCount(Prompt);
+    PromptRange.Data = Prompt;
+    ParseLineIntoGlyphs(Terminal, PromptRange, &Cursor, 0);
+    
     source_buffer_range CommandLineRange = {0};
     CommandLineRange.Count = Terminal->CommandLineCount;
     CommandLineRange.Data = Terminal->CommandLine;
-    ParseLineIntoGlyphs(Terminal, 1, CommandLineRange, &Cursor, 1);
-    
+    ParseLineIntoGlyphs(Terminal, CommandLineRange, &Cursor, 1);
+
     char CursorCode[] = {'\x1b', '[', '5',  'm', 0xe2, 0x96, 0x88};
     source_buffer_range CursorRange = {0};
     CursorRange.Count = ArrayCount(CursorCode);
     CursorRange.Data = CursorCode;
-    ParseLineIntoGlyphs(Terminal, 1, CursorRange, &Cursor, 1);
-    
-    AdvanceRow(Terminal, &Cursor.At);
-    AdvanceRow(Terminal, &Cursor.At);
+    ParseLineIntoGlyphs(Terminal, CursorRange, &Cursor, 1);
+    AdvanceRowNoClear(Terminal, &Cursor.At);
 
     Terminal->ScreenBuffer.FirstLineY = CursorJumped ? 0 : Cursor.At.Y;
 }
@@ -716,7 +741,7 @@ static int ExecuteSubProcess(example_terminal *Terminal, char *ProcessName, char
     CreatePipe(&StartupInfo.hStdInput, &Terminal->Legacy_WriteStdIn, &Inherit, 0);
     CreatePipe(&Terminal->Legacy_ReadStdOut, &StartupInfo.hStdOutput, &Inherit, 0);
     CreatePipe(&Terminal->Legacy_ReadStdError, &StartupInfo.hStdError, &Inherit, 0);
-
+    
     SetHandleInformation(Terminal->Legacy_WriteStdIn, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(Terminal->Legacy_ReadStdOut, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(Terminal->Legacy_ReadStdError, HANDLE_FLAG_INHERIT, 0);
@@ -742,9 +767,8 @@ static int ExecuteSubProcess(example_terminal *Terminal, char *ProcessName, char
             wsprintfW(PipeName, L"\\\\.\\pipe\\fastpipe%x", ProcessInfo.dwProcessId);
             Terminal->FastPipe = CreateNamedPipeW(PipeName, PIPE_ACCESS_DUPLEX|FILE_FLAG_OVERLAPPED, 0, 1, PipeSize, PipeSize, 0, 0);
 
-            OVERLAPPED Overlapped = {0};
-            Overlapped.hEvent = CreateEvent(0, TRUE, TRUE, 0);
-            ConnectNamedPipe(Terminal->FastPipe, &Overlapped);
+            // TODO(casey): Should give this its own event / overlapped
+            ConnectNamedPipe(Terminal->FastPipe, &Terminal->FastPipeTrigger);
 
             DWORD Error = GetLastError();
             Assert(Error == ERROR_IO_PENDING);
@@ -782,9 +806,23 @@ static int StringsAreEqual(char *A, char *B)
     }
 }
 
+static void
+RevertToDefaultFont(example_terminal *Terminal)
+{
+#if 0
+    wsprintfW(Terminal->RequestedFontName, L"%s", L"Courier New");
+    Terminal->RequestedFontHeight = 25;
+#else
+    wsprintfW(Terminal->RequestedFontName, L"%s", L"Cascadia Mono");
+    Terminal->RequestedFontHeight = 15;
+#endif
+}
+
 static int
 RefreshFont(example_terminal *Terminal)
 {
+    int Result = 0;
+
     //
     // NOTE(casey): Tell the glyph generator to switch to the new font.
     //
@@ -792,17 +830,34 @@ RefreshFont(example_terminal *Terminal)
     uint32_t GenFlags = 0;
     if(Terminal->RequestClearType) GenFlags |= GlyphGen_UseClearType;
     if(Terminal->RequestDirectWrite) GenFlags |= GlyphGen_UseDirectWrite;
-    int Result = SetFont(&Terminal->GlyphGen, GenFlags, Terminal->RequestedFontName, Terminal->RequestedFontHeight);
 
     //
     // NOTE(casey): Set up the mapping table between run-hashes and glyphs
     //
 
     glyph_table_params Params = {0};
-    Params.HashCount = 65536;
-    Params.EntryCount = GetExpectedTileCountForDimension(&Terminal->GlyphGen, Terminal->REFTERM_TEXTURE_WIDTH, Terminal->REFTERM_TEXTURE_HEIGHT); // 65536; // 260*75 + 128;
     Params.ReservedTileCount = ArrayCount(Terminal->ReservedTileTable);
-    Params.CacheTileCountInX = SafeRatio1(Terminal->REFTERM_TEXTURE_WIDTH, Terminal->GlyphGen.FontWidth);
+
+    // NOTE(casey): We have to shrink the font size until it fits in the glyph texture,
+    // to prevent large fonts from overflowing.
+    for(int Try = 0; Try <= 1; ++Try)
+    {
+        Result = SetFont(&Terminal->GlyphGen, GenFlags, Terminal->RequestedFontName, Terminal->RequestedFontHeight);
+        if(Result)
+        {
+            Params.CacheTileCountInX = SafeRatio1(Terminal->REFTERM_TEXTURE_WIDTH, Terminal->GlyphGen.FontWidth);
+            Params.EntryCount = GetExpectedTileCountForDimension(&Terminal->GlyphGen, Terminal->REFTERM_TEXTURE_WIDTH, Terminal->REFTERM_TEXTURE_HEIGHT);
+            Params.HashCount = 4096;
+
+            if(Params.EntryCount > Params.ReservedTileCount)
+            {
+                Params.EntryCount -= Params.ReservedTileCount;
+                break;
+            }
+        }
+
+        RevertToDefaultFont(Terminal);
+    }
 
     // TODO(casey): In theory, this VirtualAlloc could fail, so it may be a better idea to
     // just use a reserved memory footprint here and always use the same size.  It is not
@@ -861,6 +916,8 @@ static void ExecuteCommandLine(example_terminal *Terminal, DWORD PipeSize)
     ParamRange.Data = B;
     ParamRange.Count = Terminal->CommandLineCount - ParamStart;
 
+    // TODO(casey): Collapse all these options into a little array, so there's no
+    // copy-pasta.
     AppendOutput(Terminal, "\n");
     if(StringsAreEqual(Terminal->CommandLine, "status"))
     {
@@ -872,6 +929,7 @@ static void ExecuteCommandLine(example_terminal *Terminal, DWORD PipeSize)
         AppendOutput(Terminal, "DirectWrite: %s\n", Terminal->RequestDirectWrite ? "ON" : "off");
         AppendOutput(Terminal, "Line Wrap: %s\n", Terminal->LineWrap ? "ON" : "off");
         AppendOutput(Terminal, "Debug: %s\n", Terminal->DebugHighlighting ? "ON" : "off");
+        AppendOutput(Terminal, "Throttling: %s\n", !Terminal->NoThrottle ? "ON" : "off");
     }
     else if(StringsAreEqual(Terminal->CommandLine, "fastpipe"))
     {
@@ -887,6 +945,11 @@ static void ExecuteCommandLine(example_terminal *Terminal, DWORD PipeSize)
     {
         Terminal->DebugHighlighting = !Terminal->DebugHighlighting;
         AppendOutput(Terminal, "Debug: %s\n", Terminal->DebugHighlighting ? "ON" : "off");
+    }
+    else if(StringsAreEqual(Terminal->CommandLine, "throttle"))
+    {
+        Terminal->NoThrottle = !Terminal->NoThrottle;
+        AppendOutput(Terminal, "Throttling: %s\n", !Terminal->NoThrottle ? "ON" : "off");
     }
     else if(StringsAreEqual(Terminal->CommandLine, "font"))
     {
@@ -923,14 +986,8 @@ static void ExecuteCommandLine(example_terminal *Terminal, DWORD PipeSize)
     else if((StringsAreEqual(Terminal->CommandLine, "clear")) ||
             (StringsAreEqual(Terminal->CommandLine, "cls")))
     {
-        ClearCursor(&Terminal->RunningCursor);
-        for(uint32_t LineIndex = 0;
-            LineIndex < 2*Terminal->ScreenBuffer.DimY; // TODO(casey): Not the best way to clear
-            ++LineIndex)
-        {
-            size_t AtP = GetCurrentAbsoluteP(&Terminal->ScrollBackBuffer);
-            LineFeed(Terminal, AtP, AtP, Terminal->RunningCursor.Props);
-        }
+        ClearCursor(Terminal, &Terminal->RunningCursor);
+        memset(Terminal->Lines, 0, Terminal->MaxLineCount*sizeof(example_line));
     }
     else if((StringsAreEqual(Terminal->CommandLine, "exit")) ||
             (StringsAreEqual(Terminal->CommandLine, "quit")))
@@ -975,25 +1032,34 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
 {
     example_terminal *Terminal = VirtualAlloc(0, sizeof(example_terminal), MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
     Terminal->Window = (HWND)Param;
-    Terminal->ChildProcess = INVALID_HANDLE_VALUE;
     Terminal->RequestDirectWrite = 1;
-    ClearCursor(&Terminal->RunningCursor);
+    Terminal->LineWrap = 1;
+    Terminal->ChildProcess = INVALID_HANDLE_VALUE;
+    Terminal->Legacy_WriteStdIn = INVALID_HANDLE_VALUE;
+    Terminal->Legacy_ReadStdOut = INVALID_HANDLE_VALUE;
+    Terminal->Legacy_ReadStdError = INVALID_HANDLE_VALUE;
+    Terminal->FastPipe = INVALID_HANDLE_VALUE;
+    Terminal->DefaultForegroundColor = 0x00afafaf;
+    Terminal->DefaultBackgroundColor = 0x000c0c0c;
+    Terminal->FastPipeReady = CreateEventW(0, TRUE, FALSE, 0);
+    Terminal->FastPipeTrigger.hEvent = Terminal->FastPipeReady;
+
+    ClearCursor(Terminal, &Terminal->RunningCursor);
 
     DWORD PipeSize = 16*1024*1024;
 
-    Terminal->REFTERM_TEXTURE_WIDTH = 8192;
-    Terminal->REFTERM_TEXTURE_HEIGHT = 8192;
+    Terminal->REFTERM_TEXTURE_WIDTH = 2048;
+    Terminal->REFTERM_TEXTURE_HEIGHT = 2048;
 
     // TODO(casey): Auto-size this, somehow?  The TransferHeight effectively restricts the maximum size of the
     // font, so it may want to be "grown" based on the font size selected.
-    Terminal->TransferWidth = 1024;
-    Terminal->TransferHeight = 256;
+    Terminal->TransferWidth = 512;
+    Terminal->TransferHeight = 128;
 
     Terminal->REFTERM_MAX_WIDTH = 1024;
     Terminal->REFTERM_MAX_HEIGHT = 1024;
 
     Terminal->Renderer = AcquireD3D11Renderer(Terminal->Window, 0);
-    SetD3D11MaxCellCount(&Terminal->Renderer, Terminal->REFTERM_MAX_WIDTH * Terminal->REFTERM_MAX_HEIGHT);
     SetD3D11GlyphCacheDim(&Terminal->Renderer, Terminal->REFTERM_TEXTURE_WIDTH, Terminal->REFTERM_TEXTURE_HEIGHT);
     SetD3D11GlyphTransferDim(&Terminal->Renderer, Terminal->TransferWidth, Terminal->TransferHeight);
 
@@ -1003,22 +1069,23 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
     ScriptRecordDigitSubstitution(LOCALE_USER_DEFAULT, &Terminal->Partitioner.UniDigiSub); // TODO(casey): Move this out to the stored code
     ScriptApplyDigitSubstitution(&Terminal->Partitioner.UniDigiSub, &Terminal->Partitioner.UniControl, &Terminal->Partitioner.UniState);
 
-    Terminal->MaxLineCount = 65536;
+    Terminal->MaxLineCount = 8192;
     Terminal->Lines = VirtualAlloc(0, Terminal->MaxLineCount*sizeof(example_line), MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
 
-    wsprintfW(Terminal->RequestedFontName, L"%s", L"Courier New");
-    Terminal->RequestedFontHeight = 30;
+    RevertToDefaultFont(Terminal);
     RefreshFont(Terminal);
 
     ShowWindow(Terminal->Window, SW_SHOWDEFAULT);
 
     AppendOutput(Terminal, "\n"); // TODO(casey): Better line startup - this is here just to initialize the running cursor.
+    AppendOutput(Terminal, "Refterm v%u\n", REFTERM_VERSION);
     AppendOutput(Terminal,
                  "THIS IS \x1b[38;2;255;0;0m\x1b[5mNOT\x1b[0m A REAL TERMINAL.\r\n"
                  "It is a reference renderer for demonstrating how to easily build relatively efficient terminal displays.\r\n"
                  "\x1b[38;2;255;0;0m\x1b[5mDO NOT\x1b[0m attempt to use this as your terminal, or you will be very sad.\r\n"
                  );
 
+    int BlinkMS = 500; // TODO(casey): Use this in blink determination
     int MinTermSize = 512;
     uint32_t Width = MinTermSize;
     uint32_t Height = MinTermSize;
@@ -1038,6 +1105,17 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
 
     while(!Terminal->Quit)
     {
+        if(!Terminal->NoThrottle)
+        {
+            HANDLE Handles[8];
+            DWORD HandleCount = 0;
+            
+            Handles[HandleCount++] = Terminal->FastPipeReady;
+            if(Terminal->Legacy_ReadStdOut != INVALID_HANDLE_VALUE) Handles[HandleCount++] = Terminal->Legacy_ReadStdOut;
+            if(Terminal->Legacy_ReadStdError != INVALID_HANDLE_VALUE) Handles[HandleCount++] = Terminal->Legacy_ReadStdError;
+            MsgWaitForMultipleObjects(HandleCount, Handles, FALSE, BlinkMS, QS_ALLINPUT);
+        }
+
         MSG Message;
         while(PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
         {
@@ -1085,7 +1163,7 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
                             {
                                 --Terminal->CommandLineCount;
                             }
-                                                        
+
                             if(Terminal->CommandLineCount > 0)
                             {
                                 --Terminal->CommandLineCount;
@@ -1149,8 +1227,9 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
             Width = Rect.right - Rect.left;
             Height = Rect.bottom - Rect.top;
 
-            uint32_t NewDimX = SafeRatio1(Width + Terminal->GlyphGen.FontWidth - 1, Terminal->GlyphGen.FontWidth);
-            uint32_t NewDimY = SafeRatio1(Height + Terminal->GlyphGen.FontHeight - 1, Terminal->GlyphGen.FontHeight);
+            uint32_t Margin = 8;
+            uint32_t NewDimX = SafeRatio1(Width - Margin, Terminal->GlyphGen.FontWidth);
+            uint32_t NewDimY = SafeRatio1(Height - Margin, Terminal->GlyphGen.FontHeight);
             if(NewDimX > Terminal->REFTERM_MAX_WIDTH) NewDimX = Terminal->REFTERM_MAX_WIDTH;
             if(NewDimY > Terminal->REFTERM_MAX_HEIGHT) NewDimY = Terminal->REFTERM_MAX_HEIGHT;
 
@@ -1164,10 +1243,30 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
             }
         }
 
-        int FastIn = UpdateTerminalBuffer(Terminal, Terminal->FastPipe);
-        int SlowIn = UpdateTerminalBuffer(Terminal, Terminal->Legacy_ReadStdOut);
-        int ErrIn = UpdateTerminalBuffer(Terminal, Terminal->Legacy_ReadStdError);
-
+        do
+        {
+            int FastIn = UpdateTerminalBuffer(Terminal, Terminal->FastPipe);
+            int SlowIn = UpdateTerminalBuffer(Terminal, Terminal->Legacy_ReadStdOut);
+            int ErrIn = UpdateTerminalBuffer(Terminal, Terminal->Legacy_ReadStdError);
+            
+            if(!SlowIn && (Terminal->Legacy_ReadStdOut != INVALID_HANDLE_VALUE))
+            {
+                CloseHandle(Terminal->Legacy_ReadStdOut); // TODO(casey): Not sure if this is supposed to be called?
+                Terminal->Legacy_ReadStdOut = INVALID_HANDLE_VALUE;
+            }
+            
+            if(!ErrIn && (Terminal->Legacy_ReadStdError != INVALID_HANDLE_VALUE))
+            {
+                CloseHandle(Terminal->Legacy_ReadStdError); // TODO(casey): Not sure if this is supposed to be called?
+                Terminal->Legacy_ReadStdError = INVALID_HANDLE_VALUE;
+            }
+        }
+        while((Terminal->Renderer.FrameLatencyWaitableObject != INVALID_HANDLE_VALUE) &&
+                  (WaitForSingleObject(Terminal->Renderer.FrameLatencyWaitableObject, 0) == WAIT_TIMEOUT));
+        
+        ResetEvent(Terminal->FastPipeReady);
+        ReadFile(Terminal->FastPipe, 0, 0, 0, &Terminal->FastPipeTrigger);
+            
         LayoutLines(Terminal);
 
         // TODO(casey): Split RendererDraw into two!
@@ -1175,7 +1274,7 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
 
         LARGE_INTEGER BlinkTimer;
         QueryPerformanceCounter(&BlinkTimer);
-        int Blink = ((2*(BlinkTimer.QuadPart - StartTime.QuadPart) / (Frequency.QuadPart)) & 1);
+        int Blink = ((1000*(BlinkTimer.QuadPart - StartTime.QuadPart) / (BlinkMS*Frequency.QuadPart)) & 1);
         if(!Terminal->Renderer.Device)
         {
             Terminal->Renderer = AcquireD3D11Renderer(Terminal->Window, 0);
@@ -1201,10 +1300,17 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
 
             WCHAR Title[1024];
 
-            glyph_table_stats Stats = GetAndClearStats(Terminal->GlyphTable);
-            wsprintfW(Title, L"refterm Size=%dx%d RenderFPS=%d.%02d CacheHits/Misses=%d/%d Recycle:%d",
-                      Terminal->ScreenBuffer.DimX, Terminal->ScreenBuffer.DimY, (int)FramesPerSec, (int)(FramesPerSec*100) % 100,
-                      (int)Stats.HitCount, (int)Stats.MissCount, (int)Stats.RecycleCount);
+            if(Terminal->NoThrottle)
+            {
+                glyph_table_stats Stats = GetAndClearStats(Terminal->GlyphTable);
+                wsprintfW(Title, L"refterm Size=%dx%d RenderFPS=%d.%02d CacheHits/Misses=%d/%d Recycle:%d",
+                              Terminal->ScreenBuffer.DimX, Terminal->ScreenBuffer.DimY, (int)FramesPerSec, (int)(FramesPerSec*100) % 100,
+                              (int)Stats.HitCount, (int)Stats.MissCount, (int)Stats.RecycleCount);
+            }
+            else
+            {
+                wsprintfW(Title, L"refterm");
+            }
 
             SetWindowTextW(Terminal->Window, Title);
         }

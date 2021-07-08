@@ -1,4 +1,4 @@
-#define REFTERM_VERSION 1
+#define REFTERM_VERSION 2
 
 #if _DEBUG
 #define Assert(cond) do { if (!(cond)) __debugbreak(); } while (0)
