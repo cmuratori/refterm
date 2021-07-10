@@ -45,9 +45,11 @@ static int GDISetFont(glyph_generator *GlyphGen, wchar_t *FontName, uint32_t Fon
         GetTextMetricsW(GlyphGen->DC, &Metrics);
         
         // TODO(casey): Real cell size determination would go here - probably with input from the user?
-        GlyphGen->FontHeight = Metrics.tmHeight;
-        GlyphGen->FontWidth = Metrics.tmAveCharWidth + 1; // not sure why +1 is needed here
-        // GlyphGen.FontWidth = Metrics.tmMaxCharWidth; // not sure why +1 is needed here
+        GlyphGen->CellHeight = Metrics.tmHeight;
+        GlyphGen->CellWidth = Metrics.tmAveCharWidth + 1; // not sure why +1 is needed here
+        GlyphGen->GlyphHeight = Metrics.tmHeight;
+        GlyphGen->GlyphWidth = Metrics.tmAveCharWidth + 1;
+        // GlyphGen.FontWidth = Metrics.tmMaxCharWidth; 
         
         Result = 1;
     }
@@ -95,8 +97,8 @@ static glyph_generator AllocateGlyphGenerator(uint32_t TransferWidth, uint32_t T
 
 static uint32_t GetExpectedTileCountForDimension(glyph_generator *GlyphGen, uint32_t Width, uint32_t Height)
 {
-    uint32_t PerRow = SafeRatio1(Width, GlyphGen->FontWidth);
-    uint32_t PerColumn = SafeRatio1(Height, GlyphGen->FontHeight);
+    uint32_t PerRow = SafeRatio1(Width, GlyphGen->GlyphWidth);
+    uint32_t PerColumn = SafeRatio1(Height, GlyphGen->GlyphHeight);
     uint32_t Result = PerRow*PerColumn;
     
     return Result;
@@ -126,7 +128,7 @@ static uint32_t GetTileCount(glyph_generator *GlyphGen, glyph_table *Table, size
                 GetTextExtentPointW(GlyphGen->DC, String, StringLen, &Size);
             }
             
-            Entry.TileCount = SafeRatio1((uint16_t)(Size.cx + GlyphGen->FontWidth/2), GlyphGen->FontWidth);
+            Entry.TileCount = SafeRatio1((uint16_t)(Size.cx + GlyphGen->CellWidth/2), GlyphGen->CellWidth);
         }
         else
         {
@@ -154,7 +156,7 @@ static void PrepareTilesForTransfer(glyph_generator *GlyphGen, d3d11_renderer *R
         }
         else
         {
-            PatBlt(GlyphGen->DC, 0, 0, TileCount*GlyphGen->FontWidth, GlyphGen->FontHeight, BLACKNESS);
+            PatBlt(GlyphGen->DC, 0, 0, TileCount*GlyphGen->GlyphWidth, GlyphGen->GlyphHeight, BLACKNESS);
             if(!ExtTextOutW(GlyphGen->DC, 0, 0, ETO_OPAQUE, 0, String, StringLen, 0))
             {
                 DWORD Error = GetLastError();
@@ -189,17 +191,18 @@ static void TransferTile(glyph_generator *GlyphGen, d3d11_renderer *Renderer, ui
     if(Renderer->DeviceContext)
     {
         glyph_cache_point Point = UnpackGlyphCachePoint(DestIndex);
-        uint32_t X = Point.X*GlyphGen->FontWidth;
-        uint32_t Y = Point.Y*GlyphGen->FontHeight;
+        uint32_t X = Point.X*GlyphGen->GlyphWidth;
+        uint32_t Y = Point.Y*GlyphGen->GlyphHeight;
+        uint32_t SourceX = TileIndex*GlyphGen->CellWidth;
         
         if(GlyphGen->UseDWrite)
         {
             D3D11_BOX SourceBox =
             {
-                .left = (TileIndex)*GlyphGen->FontWidth,
-                .right = (TileIndex + 1)*GlyphGen->FontWidth,
+                .left = SourceX,
+                .right = SourceX + GlyphGen->GlyphWidth,
                 .top = 0,
-                .bottom = GlyphGen->FontHeight,
+                .bottom = GlyphGen->GlyphHeight,
                 .front = 0,
                 .back = 1,
             };
@@ -213,16 +216,16 @@ static void TransferTile(glyph_generator *GlyphGen, d3d11_renderer *Renderer, ui
             D3D11_BOX TexelBox = 
             {
                 .left = X,
-                .right = X + GlyphGen->FontWidth,
+                .right = X + GlyphGen->GlyphWidth,
                 .top = Y,
-                .bottom = Y + GlyphGen->FontHeight,
+                .bottom = Y + GlyphGen->GlyphHeight,
                 .front = 0,
                 .back = 1,
             };
             
-            Assert(((TileIndex + 1)*GlyphGen->FontWidth) <= GlyphGen->TransferWidth);
+            Assert((SourceX + GlyphGen->GlyphWidth) <= GlyphGen->TransferWidth);
             
-            uint32_t *SourceCorner = GlyphGen->Pixels + TileIndex*GlyphGen->FontWidth;
+            uint32_t *SourceCorner = GlyphGen->Pixels + SourceX;
             ID3D11DeviceContext_UpdateSubresource(Renderer->DeviceContext, (ID3D11Resource*)Renderer->GlyphTexture,
                                                   0, &TexelBox, SourceCorner, GlyphGen->Pitch, 0);
         }

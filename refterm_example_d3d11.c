@@ -416,7 +416,8 @@ static void RendererDraw(example_terminal *Terminal, uint32_t Width, uint32_t He
         {
             renderer_const_buffer ConstData =
             {
-                .CellSize = { GlyphGen->FontWidth, GlyphGen->FontHeight },
+                .CellSize = { GlyphGen->CellWidth, GlyphGen->CellHeight },
+                .GlyphSize = { GlyphGen->GlyphWidth, GlyphGen->GlyphHeight },
                 .TermSize = { Term->DimX, Term->DimY },
                 .TopLeftMargin = {8, 8},
                 .BlinkModulate = BlinkModulate,

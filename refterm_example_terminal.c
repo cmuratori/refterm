@@ -845,7 +845,7 @@ RefreshFont(example_terminal *Terminal)
         Result = SetFont(&Terminal->GlyphGen, GenFlags, Terminal->RequestedFontName, Terminal->RequestedFontHeight);
         if(Result)
         {
-            Params.CacheTileCountInX = SafeRatio1(Terminal->REFTERM_TEXTURE_WIDTH, Terminal->GlyphGen.FontWidth);
+            Params.CacheTileCountInX = SafeRatio1(Terminal->REFTERM_TEXTURE_WIDTH, Terminal->GlyphGen.GlyphWidth);
             Params.EntryCount = GetExpectedTileCountForDimension(&Terminal->GlyphGen, Terminal->REFTERM_TEXTURE_WIDTH, Terminal->REFTERM_TEXTURE_HEIGHT);
             Params.HashCount = 4096;
 
@@ -1228,8 +1228,8 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
             Height = Rect.bottom - Rect.top;
 
             uint32_t Margin = 8;
-            uint32_t NewDimX = SafeRatio1(Width - Margin, Terminal->GlyphGen.FontWidth);
-            uint32_t NewDimY = SafeRatio1(Height - Margin, Terminal->GlyphGen.FontHeight);
+            uint32_t NewDimX = SafeRatio1(Width - Margin, Terminal->GlyphGen.CellWidth);
+            uint32_t NewDimY = SafeRatio1(Height - Margin, Terminal->GlyphGen.CellHeight);
             if(NewDimX > Terminal->REFTERM_MAX_WIDTH) NewDimX = Terminal->REFTERM_MAX_WIDTH;
             if(NewDimY > Terminal->REFTERM_MAX_HEIGHT) NewDimY = Terminal->REFTERM_MAX_HEIGHT;
 

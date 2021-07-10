@@ -134,8 +134,10 @@ extern "C" int DWriteSetFont(glyph_generator *GlyphGen, wchar_t *FontName, uint3
                 UINT32 Ignored;
                 Layout->GetLineMetrics(&LineMetrics, 1, &Ignored);
                 
-                GlyphGen->FontHeight = (uint32_t)LineMetrics.height;
-                GlyphGen->FontWidth = (uint32_t)CharMetrics.width;
+                GlyphGen->GlyphHeight = (uint32_t)(1.5*LineMetrics.height);
+                GlyphGen->GlyphWidth = (uint32_t)(1.5*CharMetrics.width);
+                GlyphGen->CellHeight = (uint32_t)LineMetrics.height;
+                GlyphGen->CellWidth = (uint32_t)CharMetrics.width;
                 
                 Layout->Release();
                 

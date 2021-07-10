@@ -15,7 +15,11 @@ typedef struct glyph_generator glyph_generator;
 
 struct glyph_generator
 {
-    uint32_t FontWidth, FontHeight;
+    // NOTE(casey): The glypy width and height are _larger_ than the cell width and height,
+    // so that glyphs can hang over into neighboring cells.
+    uint32_t GlyphWidth, GlyphHeight;
+    uint32_t CellWidth, CellHeight;
+    
     uint32_t Pitch;
     uint32_t *Pixels;
     

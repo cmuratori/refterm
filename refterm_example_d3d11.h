@@ -1,7 +1,11 @@
 typedef struct
 {
     uint32_t CellSize[2];
+    uint32_t GlyphSize[2];
+
     uint32_t TermSize[2];
+    uint32_t Pad[2];
+
     uint32_t TopLeftMargin[2];
     uint32_t BlinkModulate;
     uint32_t MarginColor;

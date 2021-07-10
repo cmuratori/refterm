@@ -8,7 +8,9 @@ struct TerminalCell
 cbuffer ConstBuffer : register(b0)
 {
     uint2 CellSize;
+    uint2 GlyphSize;
     uint2 TermSize;
+    uint2 Pad;
     uint2 TopLeftMargin;
     uint BlinkModulate;
     uint MarginColor;
@@ -33,41 +35,76 @@ uint2 UnpackGlyphXY(uint GlyphIndex)
     return uint2(x, y);
 }
 
+float4 SampleGlyph(uint2 CellIndex, uint2 BaseCellPos, int dX, int dY)
+{
+    // TODO(casey): Is the compiler smart enough not to do this 4 times?
+    float3 Blink = UnpackColor(BlinkModulate);
+
+    float4 Texel = float4(0, 0, 0, 0);
+
+    uint2 CellPos = BaseCellPos - dX*CellSize.x - dY*CellSize.y;
+    if((CellPos.x < GlyphSize.x) &&
+       (CellPos.y < GlyphSize.y))
+    {
+        TerminalCell Cell = Cells[(CellIndex.y + dY) * TermSize.x + (CellIndex.x + dX)];
+        uint2 GlyphPos = UnpackGlyphXY(Cell.GlyphIndex)*GlyphSize;
+        Texel = GlyphTexture[GlyphPos + CellPos];
+
+        float3 Foreground = UnpackColor(Cell.Foreground);
+
+        // TODO(casey): Pack blink into foreground instead, so we never read background of neighbors
+        float tBlink = float(Cell.Background >> 31);
+        float3 Modulate = lerp(float3(1, 1, 1), Blink, tBlink);
+        Foreground *= Modulate;
+
+        Texel.rgb *= Foreground;
+    }
+
+    return Texel;
+}
+
 float4 ComputeOutputColor(uint2 ScreenPos)
 {
     uint2 CellIndex = (ScreenPos - TopLeftMargin) / CellSize;
     uint2 CellPos = (ScreenPos - TopLeftMargin) % CellSize;
 
     float3 Result;
+
     if((ScreenPos.x >= TopLeftMargin.x) &&
        (ScreenPos.y >= TopLeftMargin.y) &&
        (CellIndex.x < TermSize.x) &&
        (CellIndex.y < TermSize.y))
     {
-        TerminalCell Cell = Cells[CellIndex.y * TermSize.x + CellIndex.x];
-        uint2 GlyphPos = UnpackGlyphXY(Cell.GlyphIndex)*CellSize;
+        // TODO(casey): Should I try to coallesce this with SampleGlyph?
+        TerminalCell Cell = Cells[CellIndex.y*TermSize.x + CellIndex.x];
 
-        uint2 PixelPos = GlyphPos + CellPos;
-        float4 GlyphTexel = GlyphTexture[PixelPos];
+        float4 Left = SampleGlyph(CellIndex, CellPos, -1, 0);
+        float4 Top = SampleGlyph(CellIndex, CellPos, 0, -1);
+        float4 TopLeft = SampleGlyph(CellIndex, CellPos, -1, -1);
+        float4 Center = SampleGlyph(CellIndex, CellPos, 0, 0);
 
+        float4 Foreground = max(max(Left, Top), max(TopLeft, Center));
         float3 Background = UnpackColor(Cell.Background);
-        float3 Foreground = UnpackColor(Cell.Foreground);
-        float3 Blink = UnpackColor(BlinkModulate);
 
-        float tBlink = float(Cell.Background >> 31);
-        float3 Modulate = lerp(float3(1, 1, 1), Blink, tBlink);
-        Foreground *= Modulate;
-
-        // TODO: proper ClearType blending
-        Result = (1-GlyphTexel.a)*Background + GlyphTexel.rgb*Foreground;
+        Result = (1-Foreground.a)*Background + Foreground.rgb;
     }
     else
     {
         Result = UnpackColor(MarginColor);
     }
 
-    // NOTE(casey): Uncomment this to view the cache texture
-    // Result = GlyphTexture[ScreenPos].rgb;
+#if 0
+    // NOTE(casey): Turn this on to see the glyph cache texture
+    Result = GlyphTexture[ScreenPos].rgb;
+    if((ScreenPos.x / GlyphSize.x) % 2)
+    {
+        Result.rgb += float3(.1, .1, .1);
+    }
+    if((ScreenPos.y / GlyphSize.y) % 2)
+    {
+        Result.rgb += float3(.1, .1, .1);
+    }
+#endif
 
     return float4(Result, 1);
 }
