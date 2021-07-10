@@ -286,8 +286,8 @@ static int ParseEscape(example_terminal *Terminal, source_buffer_range *Range, c
 
 static size_t GetLineLength(example_line *Line)
 {
+    Assert(Line->OnePastLastP >= Line->FirstP);
     size_t Result = Line->OnePastLastP - Line->FirstP;
-    Assert(Result >= 0);
     return Result;
 }
 
@@ -548,6 +548,18 @@ static int ParseLineIntoGlyphs(example_terminal *Terminal, source_buffer_range R
         }
         else if(ContainsComplexChars)
         {
+            /* TODO(casey): Currently, if you have a long line that force-splits, it will not
+               recombine properly with Unicode.  I _DO NOT_ think this should be fixed in 
+               the line parser.  Instead, the fix should be what should happen here to begin
+               with, which is that the glyph chunking should happen in a state machine,
+               NOT using buffer runs like Uniscribe does.
+              
+               So I believe the _correct_ design here is that you have a state machine instead
+               of Uniscribe for complex grapheme clusters, and _that_ will "just work" here
+               as well as being much much faster than the current path, which is very slow
+               because of Uniscribe _and_ is limited to intermediate buffer sizes.
+            */
+            
             // NOTE(casey): If it's not an escape, and this line contains fancy Unicode stuff,
             // it's something we need to pass to a shaper to find out how it
             // has to be segmented.  Which sadly is Uniscribe at this point :(
