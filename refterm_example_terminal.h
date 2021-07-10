@@ -1,13 +1,13 @@
 enum
 {
-    TerminalCell_Bold = 0x2,
-    TerminalCell_Dim = 0x4,
-    TerminalCell_Italic = 0x8,
-    TerminalCell_Underline = 0x10,
-    TerminalCell_Blinking = 0x20,
-    TerminalCell_ReverseVideo = 0x40,
-    TerminalCell_Invisible = 0x80,
-    TerminalCell_Strikethrough = 0x100,
+    TerminalCell_Bold = 0x1,
+    TerminalCell_Dim = 0x2,
+    TerminalCell_Italic = 0x4,
+    TerminalCell_Underline = 0x8,
+    TerminalCell_Blinking = 0x10,
+    TerminalCell_ReverseVideo = 0x20,
+    TerminalCell_Invisible = 0x40,
+    TerminalCell_Strikethrough = 0x80,
 };
 
 typedef struct
@@ -38,7 +38,7 @@ typedef struct
 typedef struct
 {
     // TODO(casey): Get rid of Uniscribe so this garbage doesn't have to happen
-    
+
     SCRIPT_DIGITSUBSTITUTE UniDigiSub;
     SCRIPT_CONTROL UniControl;
     SCRIPT_STATE UniState;
@@ -62,7 +62,7 @@ typedef struct
 {
     HWND Window;
     int Quit;
-    
+
     d3d11_renderer Renderer;
     glyph_generator GlyphGen;
     void *GlyphTableMem;
@@ -70,7 +70,9 @@ typedef struct
     terminal_buffer ScreenBuffer;
     source_buffer ScrollBackBuffer;
     example_partitioner Partitioner;
-    
+
+    DWORD PipeSize;
+
     HANDLE Legacy_WriteStdIn;
     HANDLE Legacy_ReadStdOut;
     HANDLE Legacy_ReadStdError;
@@ -79,39 +81,40 @@ typedef struct
     HANDLE FastPipeReady;
     HANDLE FastPipe;
     OVERLAPPED FastPipeTrigger;
-    
+
     HANDLE ChildProcess;
-        
+
     cursor_state RunningCursor;
-    
+
+    wchar_t LastChar;
     uint32_t CommandLineCount;
     char CommandLine[256];
-    
+
     int NoThrottle;
     int DebugHighlighting;
-    
+
     uint32_t MaxLineCount;
     uint32_t CurrentLineIndex;
     uint32_t LineCount;
     example_line *Lines;
-    
+
     int32_t ViewingLineOffset;
-    
+
     wchar_t RequestedFontName[64];
     uint32_t RequestedFontHeight;
     int RequestClearType;
     int RequestDirectWrite;
     int LineWrap;
-    
+
     uint32_t DefaultForegroundColor;
     uint32_t DefaultBackgroundColor;
-    
+
     uint32_t REFTERM_TEXTURE_WIDTH;
     uint32_t REFTERM_TEXTURE_HEIGHT;
-    
+
     uint32_t TransferWidth;
     uint32_t TransferHeight;
-    
+
     uint32_t REFTERM_MAX_WIDTH;
     uint32_t REFTERM_MAX_HEIGHT;
 

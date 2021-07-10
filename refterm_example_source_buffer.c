@@ -9,35 +9,52 @@ static source_buffer AllocateSourceBuffer(size_t DataSize)
     // NOTE(casey): This has to be aligned to the allocation granularity otherwise the back-to-back buffer mapping might
     // not work.
     DataSize = (DataSize + Info.dwAllocationGranularity - 1) & ~(Info.dwAllocationGranularity - 1);
+    HANDLE Section = CreateFileMapping (INVALID_HANDLE_VALUE, 0, PAGE_READWRITE, (DWORD)(DataSize >> 32), (DWORD)(DataSize & 0xffffffff), 0);
     
-#ifdef MEM_REPLACE_PLACEHOLDER
-    // TODO(casey): Test this code path on an up-to-date Win10 machine
+ #ifdef MEM_REPLACE_PLACEHOLDER
+    void* Placeholder1 = VirtualAlloc2 (0, 0,
+                                        2 * DataSize, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS,
+                                        0, 0);
+    VirtualFree (Placeholder1, DataSize, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER);
+    void *Placeholder2 = ((char *)Placeholder1 + DataSize);
     
-    void* placeholder1 = (PCHAR) VirtualAlloc2 (0, 0,
-                                                2 * DataSize, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS,
-                                                0, 0);
-    VirtualFree (placeholder1, DataSize, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER);
-    void *placeholder2 = (void*) ((ULONG_PTR) placeholder1 + DataSize);
-    
-    HANDLE section = CreateFileMapping (INVALID_HANDLE_VALUE, 0, PAGE_READWRITE, (DWORD)(DataSize >> 32), (DWORD)(DataSize & 0xffffffff), 0);
-    void *view1 = MapViewOfFile3 (section, 0, placeholder1, 0, DataSize, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, 0, 0);
-    void *view2 = MapViewOfFile3 (section, 0, placeholder2, 0, DataSize, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, 0, 0);
-    Result.Data = view1;
-#else
-    // TODO(casey): Harden this path to try multiple times
-    HANDLE Section = CreateFileMapping(INVALID_HANDLE_VALUE, 0, PAGE_READWRITE, (DWORD)(DataSize >> 32), (DWORD)(DataSize & 0xffffffff), 0);
-    Result.Data = (char *)MapViewOfFileEx(Section, FILE_MAP_ALL_ACCESS, 0, 0, DataSize, (void *)0x40000000);
-    void *Test = MapViewOfFileEx(Section, FILE_MAP_ALL_ACCESS, 0, 0, DataSize, (void *)(Result.Data + DataSize));
-#endif
-
-    if(Result.Data)
+    void *View1 = MapViewOfFile3 (Section, 0, Placeholder1, 0, DataSize, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, 0, 0);
+    void *View2 = MapViewOfFile3 (Section, 0, Placeholder2, 0, DataSize, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, 0, 0);
+    if(View1 && View2)
     {
+        Result.Data = View1;
         Result.DataSize = DataSize;
     }
     else
     {
-        MessageBoxW(0, L"Unable to allocate scrollback buffer", L"Fatal error", MB_OK|MB_ICONSTOP);
+        MessageBoxW(0, L"Unable to allocate scrollback buffer with placeholder", L"WARNING", MB_OK);
+#endif
+        for(size_t Offset = 0x40000000;
+            Offset < 0x400000000;
+            Offset += 0x1000000)
+        {
+            // TODO(casey): Harden this path to try multiple times
+            void *View1 = (char *)MapViewOfFileEx(Section, FILE_MAP_ALL_ACCESS, 0, 0, DataSize, (void *)Offset);
+            void *View2 = MapViewOfFileEx(Section, FILE_MAP_ALL_ACCESS, 0, 0, DataSize, ((char *)View1 + DataSize));
+            
+            if(View1 && View2)
+            {
+                Result.Data = View1;
+                Result.DataSize = DataSize;
+                break;
+            }
+            
+            if(View1) UnmapViewOfFile(View1);
+            if(View2) UnmapViewOfFile(View2);
+        }
+        
+        if(!Result.Data)
+        {
+            MessageBoxW(0, L"Unable to allocate scrollback buffer with probing", L"Fatal error", MB_OK|MB_ICONSTOP);
+        }
+#ifdef MEM_REPLACE_PLACEHOLDER
     }
+#endif
     
     return Result;
 }

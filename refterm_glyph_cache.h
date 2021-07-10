@@ -74,8 +74,18 @@ struct glyph_table_params
    choice (that you won't send to the cache).  This is independent of the
    glyph table, and does not change unless you change the glyph_table_params,
    even if you reallocate the glyph table.
+
+   If you want an implicit 0 slot, the first slot filled by InitializeDirectGlyphTable
+   is always guaranteed to be 0, so you can put it in your table if you wish.
+   If instead you want it to skip writing it, because your table omits the 0 slot,
+   you can pass 1 as SkipZeroSlot and it will start writing at Table[0] with the
+   _first_ actual entry instead of the _zeroth_.
+
+   I know that's confusing, but it was the only way I could think of to
+   provide the ability for the user to both reserve the zero slot and not
+   reserve the zero slot, their choice.
 */
-static void InitializeDirectGlyphTable(glyph_table_params Params, gpu_glyph_index *Table);
+static void InitializeDirectGlyphTable(glyph_table_params Params, gpu_glyph_index *Table, int SkipZeroSlot);
 
 /* NOTE(casey):
 

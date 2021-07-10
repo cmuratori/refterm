@@ -113,15 +113,6 @@ static void ReleaseD3DCellBuffer(d3d11_renderer *Renderer)
     }
 }
 
-static void ClearD3D11GlyphTexture(d3d11_renderer *Renderer)
-{
-    if(Renderer->GlyphTextureView)
-    {
-        FLOAT Zero[4] = {0};
-        ID3D11DeviceContext1_ClearView(Renderer->DeviceContext1, (ID3D11View *)Renderer->GlyphTextureView, Zero, 0, 0);
-    }
-}
-
 static void SetD3D11MaxCellCount(d3d11_renderer *Renderer, uint32_t Count)
 {
     ReleaseD3DCellBuffer(Renderer);
@@ -421,6 +412,11 @@ static void RendererDraw(example_terminal *Terminal, uint32_t Width, uint32_t He
                 .TopLeftMargin = {8, 8},
                 .BlinkModulate = BlinkModulate,
                 .MarginColor = 0x000c0c0c,
+                
+                .StrikeMin = GlyphGen->FontHeight/2 - GlyphGen->FontHeight/10,
+                .StrikeMax = GlyphGen->FontHeight/2 + GlyphGen->FontHeight/10,
+                .UnderlineMin = GlyphGen->FontHeight - GlyphGen->FontHeight/5,
+                .UnderlineMax = GlyphGen->FontHeight,
             };
             memcpy(Mapped.pData, &ConstData, sizeof(ConstData));
         }

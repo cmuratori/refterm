@@ -12,6 +12,11 @@ cbuffer ConstBuffer : register(b0)
     uint2 TopLeftMargin;
     uint BlinkModulate;
     uint MarginColor;
+
+    uint StrikeMin;
+    uint StrikeMax;
+    uint UnderlineMin;
+    uint UnderlineMax;
 };
 
 StructuredBuffer<TerminalCell> Cells : register(t0);
@@ -54,12 +59,19 @@ float4 ComputeOutputColor(uint2 ScreenPos)
         float3 Foreground = UnpackColor(Cell.Foreground);
         float3 Blink = UnpackColor(BlinkModulate);
 
-        float tBlink = float(Cell.Background >> 31);
-        float3 Modulate = lerp(float3(1, 1, 1), Blink, tBlink);
-        Foreground *= Modulate;
+
+        if((Cell.Foreground >> 28) & 1) Foreground *= Blink;
+        if((Cell.Foreground >> 25) & 1) Foreground *= 0.5;
 
         // TODO: proper ClearType blending
         Result = (1-GlyphTexel.a)*Background + GlyphTexel.rgb*Foreground;
+
+        if( ((Cell.Foreground >> 27) & 1) &&
+            (CellPos.y >= UnderlineMin) &&
+            (CellPos.y < UnderlineMax)) Result.rgb = Foreground.rgb;
+        if( (Cell.Foreground >> 31) &&
+            (CellPos.y >= StrikeMin) &&
+            (CellPos.y < StrikeMax)) Result.rgb = Foreground.rgb;
     }
     else
     {

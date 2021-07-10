@@ -1,3 +1,7 @@
+#if !_M_X64
+#error refterm requires a 64-bit platform
+#endif
+
 #define COBJMACROS
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN

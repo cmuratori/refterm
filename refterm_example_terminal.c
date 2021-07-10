@@ -188,14 +188,21 @@ static void AdvanceColumn(example_terminal *Terminal, terminal_point *Point)
 
 static void SetCellDirect(gpu_glyph_index GPUIndex, glyph_props Props, renderer_cell *Dest)
 {
+    Dest->GlyphIndex = GPUIndex.Value;
+    uint32_t Foreground = Props.Foreground;
     uint32_t Background = Props.Background;
-    if(Props.Flags & TerminalCell_Blinking)
+    if(Props.Flags & TerminalCell_ReverseVideo)
     {
-        Background |= RENDERER_CELL_BLINK;
+        Foreground = Props.Background;
+        Background = Props.Foreground;
     }
 
-    Dest->GlyphIndex = GPUIndex.Value;
-    Dest->Foreground = Props.Foreground;
+    if(Props.Flags & TerminalCell_Invisible)
+    {
+        Dest->GlyphIndex = 0;
+    }
+
+    Dest->Foreground = Foreground | (Props.Flags << 24);
     Dest->Background = Background;
 }
 
@@ -244,7 +251,7 @@ static int ParseEscape(example_terminal *Terminal, source_buffer_range *Range, c
 
     switch(Command)
     {
-        case L'H':
+        case 'H':
         {
             // NOTE(casey): Move cursor to X,Y position
             Cursor->At.X = Params[1] - 1;
@@ -252,7 +259,7 @@ static int ParseEscape(example_terminal *Terminal, source_buffer_range *Range, c
             MovedCursor = 1;
         } break;
 
-        case L'm':
+        case 'm':
         {
             // NOTE(casey): Set graphics mode
             if(Params[0] == 0)
@@ -267,7 +274,7 @@ static int ParseEscape(example_terminal *Terminal, source_buffer_range *Range, c
             if(Params[0] == 5) Cursor->Props.Flags |= TerminalCell_Blinking;
             if(Params[0] == 7) Cursor->Props.Flags |= TerminalCell_ReverseVideo;
             if(Params[0] == 8) Cursor->Props.Flags |= TerminalCell_Invisible;
-            if(Params[0] == 8) Cursor->Props.Flags |= TerminalCell_Strikethrough;
+            if(Params[0] == 9) Cursor->Props.Flags |= TerminalCell_Strikethrough;
 
             if((Params[0] == 38) && (Params[1] == 2)) Cursor->Props.Foreground = PackRGB(Params[2], Params[3], Params[4]);
             if((Params[0] == 48) && (Params[1] == 2)) Cursor->Props.Background = PackRGB(Params[2], Params[3], Params[4]);
@@ -277,18 +284,38 @@ static int ParseEscape(example_terminal *Terminal, source_buffer_range *Range, c
     return MovedCursor;
 }
 
+static size_t GetLineLength(example_line *Line)
+{
+    size_t Result = Line->OnePastLastP - Line->FirstP;
+    Assert(Result >= 0);
+    return Result;
+}
+
 static void ParseLines(example_terminal *Terminal, source_buffer_range Range, cursor_state *Cursor)
 {
+    /* TODO(casey): Currently, if the commit of line data _straddles_ a control code boundary
+       this code does not properly _stop_ the processing cursor.  This can cause an edge case
+       where a VT code that splits a line _doesn't_ split the line as it should.  To fix this
+       the ending code just needs to check to see if the reason it couldn't parse an escape
+       code in "AtEscape" was that it ran out of characters, and if so, don't advance the parser
+       past that point.
+    */
+
     __m128i Carriage = _mm_set1_epi8('\n');
     __m128i Escape = _mm_set1_epi8('\x1b');
     __m128i Complex = _mm_set1_epi8(0x80);
 
+    size_t SplitLineAtCount = 4096;
+    size_t LastP = Range.AbsoluteP;
     while(Range.Count)
     {
         __m128i ContainsComplex = _mm_setzero_si128();
-        while(Range.Count >= 16)
+        size_t Count = Range.Count;
+        if(Count > SplitLineAtCount) Count = SplitLineAtCount;
+        char *Data = Range.Data;
+        while(Count >= 16)
         {
-            __m128i Batch = _mm_loadu_si128((__m128i *)Range.Data);
+            __m128i Batch = _mm_loadu_si128((__m128i *)Data);
             __m128i TestC = _mm_cmpeq_epi8(Batch, Carriage);
             __m128i TestE = _mm_cmpeq_epi8(Batch, Escape);
             __m128i TestX = _mm_and_si128(Batch, Complex);
@@ -300,13 +327,17 @@ static void ParseLines(example_terminal *Terminal, source_buffer_range Range, cu
                 __m128i MaskX = _mm_loadu_si128((__m128i *)(OverhangMask + 16 - Advance));
                 TestX = _mm_and_si128(MaskX, TestX);
                 ContainsComplex = _mm_or_si128(ContainsComplex, TestX);
-                Range = ConsumeCount(Range, Advance);
+                Count -= Advance;
+                Data += Advance;
                 break;
             }
 
             ContainsComplex = _mm_or_si128(ContainsComplex, TestX);
-            Range = ConsumeCount(Range, 16);
+            Count -= 16;
+            Data += 16;
         }
+
+        Range = ConsumeCount(Range, Data - Range.Data);
 
         Terminal->Lines[Terminal->CurrentLineIndex].ContainsComplexChars |=
             _mm_movemask_epi8(ContainsComplex);
@@ -331,8 +362,13 @@ static void ParseLines(example_terminal *Terminal, source_buffer_range Range, cu
                 Terminal->Lines[Terminal->CurrentLineIndex].ContainsComplexChars = 1;
             }
         }
+
+        UpdateLineEnd(Terminal, Range.AbsoluteP);
+        if(GetLineLength(&Terminal->Lines[Terminal->CurrentLineIndex]) > SplitLineAtCount)
+        {
+            LineFeed(Terminal, Range.AbsoluteP, Range.AbsoluteP, Cursor->Props);
+        }
     }
-    UpdateLineEnd(Terminal, Range.AbsoluteP);
 }
 
 static void ParseWithUniscribe(example_terminal *Terminal, source_buffer_range UTF8Range, cursor_state *Cursor)
@@ -655,7 +691,7 @@ static void LayoutLines(example_terminal *Terminal)
     // the whole thing and then also each line, for no real reason other than to make line wrapping
     // simpler.
     Clear(Terminal, &Terminal->ScreenBuffer);
-    
+
     //
     // TODO(casey): This code is super bad, and there's no need for it to keep repeating itself.
     //
@@ -708,7 +744,7 @@ static void LayoutLines(example_terminal *Terminal)
     PromptRange.Count = ArrayCount(Prompt);
     PromptRange.Data = Prompt;
     ParseLineIntoGlyphs(Terminal, PromptRange, &Cursor, 0);
-    
+
     source_buffer_range CommandLineRange = {0};
     CommandLineRange.Count = Terminal->CommandLineCount;
     CommandLineRange.Data = Terminal->CommandLine;
@@ -724,7 +760,7 @@ static void LayoutLines(example_terminal *Terminal)
     Terminal->ScreenBuffer.FirstLineY = CursorJumped ? 0 : Cursor.At.Y;
 }
 
-static int ExecuteSubProcess(example_terminal *Terminal, char *ProcessName, char *ProcessCommandLine, DWORD PipeSize)
+static int ExecuteSubProcess(example_terminal *Terminal, char *ProcessName, char *ProcessCommandLine)
 {
     if(Terminal->ChildProcess != INVALID_HANDLE_VALUE)
     {
@@ -741,7 +777,7 @@ static int ExecuteSubProcess(example_terminal *Terminal, char *ProcessName, char
     CreatePipe(&StartupInfo.hStdInput, &Terminal->Legacy_WriteStdIn, &Inherit, 0);
     CreatePipe(&Terminal->Legacy_ReadStdOut, &StartupInfo.hStdOutput, &Inherit, 0);
     CreatePipe(&Terminal->Legacy_ReadStdError, &StartupInfo.hStdError, &Inherit, 0);
-    
+
     SetHandleInformation(Terminal->Legacy_WriteStdIn, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(Terminal->Legacy_ReadStdOut, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(Terminal->Legacy_ReadStdError, HANDLE_FLAG_INHERIT, 0);
@@ -765,7 +801,8 @@ static int ExecuteSubProcess(example_terminal *Terminal, char *ProcessName, char
         {
             wchar_t PipeName[64];
             wsprintfW(PipeName, L"\\\\.\\pipe\\fastpipe%x", ProcessInfo.dwProcessId);
-            Terminal->FastPipe = CreateNamedPipeW(PipeName, PIPE_ACCESS_DUPLEX|FILE_FLAG_OVERLAPPED, 0, 1, PipeSize, PipeSize, 0, 0);
+            Terminal->FastPipe = CreateNamedPipeW(PipeName, PIPE_ACCESS_DUPLEX|FILE_FLAG_OVERLAPPED, 0, 1,
+                                                      Terminal->PipeSize, Terminal->PipeSize, 0, 0);
 
             // TODO(casey): Should give this its own event / overlapped
             ConnectNamedPipe(Terminal->FastPipe, &Terminal->FastPipeTrigger);
@@ -836,7 +873,10 @@ RefreshFont(example_terminal *Terminal)
     //
 
     glyph_table_params Params = {0};
-    Params.ReservedTileCount = ArrayCount(Terminal->ReservedTileTable);
+
+    // NOTE(casey): An additional tile is reserved for position 0, so it can be "empty",
+    // in case the space glyph is not actually empty.
+    Params.ReservedTileCount = ArrayCount(Terminal->ReservedTileTable) + 1;
 
     // NOTE(casey): We have to shrink the font size until it fits in the glyph texture,
     // to prevent large fonts from overflowing.
@@ -872,15 +912,14 @@ RefreshFont(example_terminal *Terminal)
     Terminal->GlyphTableMem = VirtualAlloc(0, GetGlyphTableFootprint(Params), MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
     Terminal->GlyphTable = PlaceGlyphTableInMemory(Params, Terminal->GlyphTableMem);
 
-    InitializeDirectGlyphTable(Params, Terminal->ReservedTileTable);
+    InitializeDirectGlyphTable(Params, Terminal->ReservedTileTable, 1);
 
     //
     // NOTE(casey): Pre-rasterize all the ASCII characters, since they are directly mapped rather than hash-mapped.
     //
 
-    ClearD3D11GlyphTexture(&Terminal->Renderer);
     for(uint32_t TileIndex = 0;
-        TileIndex < Params.ReservedTileCount;
+        TileIndex < ArrayCount(Terminal->ReservedTileTable);
         ++TileIndex)
     {
         wchar_t Letter = MinDirectCodepoint + TileIndex;
@@ -888,10 +927,16 @@ RefreshFont(example_terminal *Terminal)
         TransferTile(&Terminal->GlyphGen, &Terminal->Renderer, 0, Terminal->ReservedTileTable[TileIndex]);
     }
 
+    // NOTE(casey): Clear the reserved 0 tile
+    wchar_t Nothing = 0;
+    gpu_glyph_index ZeroTile = {0};
+    PrepareTilesForTransfer(&Terminal->GlyphGen, &Terminal->Renderer, 0, &Nothing, 1);
+    TransferTile(&Terminal->GlyphGen, &Terminal->Renderer, 0, ZeroTile);
+
     return Result;
 }
 
-static void ExecuteCommandLine(example_terminal *Terminal, DWORD PipeSize)
+static void ExecuteCommandLine(example_terminal *Terminal)
 {
     // TODO(casey): All of this is complete garbage and should never ever be used.
 
@@ -921,6 +966,7 @@ static void ExecuteCommandLine(example_terminal *Terminal, DWORD PipeSize)
     AppendOutput(Terminal, "\n");
     if(StringsAreEqual(Terminal->CommandLine, "status"))
     {
+        ClearProps(Terminal, &Terminal->RunningCursor.Props);
         AppendOutput(Terminal, "RefTerm v%u\n", REFTERM_VERSION);
         AppendOutput(Terminal, "Size: %u x %u\n", Terminal->ScreenBuffer.DimX, Terminal->ScreenBuffer.DimY);
         AppendOutput(Terminal, "Fast pipe: %s\n", Terminal->EnableFastPipe ? "ON" : "off");
@@ -1010,11 +1056,11 @@ static void ExecuteCommandLine(example_terminal *Terminal, DWORD PipeSize)
         char ProcessCommandLine[ArrayCount(Terminal->CommandLine) + 1];
         wsprintfA(ProcessName, "%s.exe", A);
         wsprintfA(ProcessCommandLine, "%s.exe %s", A, B);
-        if(!ExecuteSubProcess(Terminal, ProcessName, ProcessCommandLine, PipeSize))
+        if(!ExecuteSubProcess(Terminal, ProcessName, ProcessCommandLine))
         {
             wsprintfA(ProcessName, "c:\\Windows\\System32\\cmd.exe");
             wsprintfA(ProcessCommandLine, "cmd.exe /c %s.exe %s", A, B);
-            if(!ExecuteSubProcess(Terminal, ProcessName, ProcessCommandLine, PipeSize))
+            if(!ExecuteSubProcess(Terminal, ProcessName, ProcessCommandLine))
             {
                 AppendOutput(Terminal, "ERROR: Unable to execute %s\n", Terminal->CommandLine);
             }
@@ -1026,6 +1072,111 @@ static int IsUTF8Extension(char A)
 {
     int Result = ((A & 0xc0) == 0x80);
     return Result;
+}
+
+static void ProcessMessages(example_terminal *Terminal)
+{
+    MSG Message;
+    while(PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
+    {
+        switch(Message.message)
+        {
+            case WM_QUIT:
+            {
+                Terminal->Quit = 1;
+            } break;
+
+            case WM_KEYDOWN:
+            {
+                switch(Message.wParam)
+                {
+                    case VK_PRIOR:
+                    {
+                        Terminal->ViewingLineOffset -= Terminal->ScreenBuffer.DimY/2;
+                    } break;
+
+                    case VK_NEXT:
+                    {
+                        Terminal->ViewingLineOffset += Terminal->ScreenBuffer.DimY/2;
+                    } break;
+                }
+
+                if(Terminal->ViewingLineOffset > 0)
+                {
+                    Terminal->ViewingLineOffset = 0;
+                }
+
+                if(Terminal->ViewingLineOffset < -(int)Terminal->LineCount)
+                {
+                    Terminal->ViewingLineOffset = -(int)Terminal->LineCount;
+                }
+            } break;
+
+            case WM_CHAR:
+            {
+                switch(Message.wParam)
+                {
+                    case VK_BACK:
+                    {
+                        while((Terminal->CommandLineCount > 0) &&
+                              IsUTF8Extension(Terminal->CommandLine[Terminal->CommandLineCount - 1]))
+                        {
+                            --Terminal->CommandLineCount;
+                        }
+
+                        if(Terminal->CommandLineCount > 0)
+                        {
+                            --Terminal->CommandLineCount;
+                        }
+                    } break;
+
+                    case VK_RETURN:
+                    {
+                        ExecuteCommandLine(Terminal);
+                        Terminal->CommandLineCount = 0;
+                        Terminal->ViewingLineOffset = 0;
+                    } break;
+
+                    default:
+                    {
+                        wchar_t Char = (wchar_t)Message.wParam;
+                        wchar_t Chars[2];
+                        int CharCount = 0;
+
+                        if(IS_HIGH_SURROGATE(Char))
+                        {
+                            Terminal->LastChar = Char;
+                        }
+                        else if(IS_LOW_SURROGATE(Char))
+                        {
+                            if(IS_SURROGATE_PAIR(Terminal->LastChar, Char))
+                            {
+                                Chars[0] = Terminal->LastChar;
+                                Chars[1] = Char;
+                                CharCount = 2;
+                            }
+                            Terminal->LastChar = 0;
+                        }
+                        else
+                        {
+                            Chars[0] = Char;
+                            CharCount = 1;
+                        }
+
+                        if(CharCount)
+                        {
+                            DWORD SpaceLeft = ArrayCount(Terminal->CommandLine) - Terminal->CommandLineCount;
+                            Terminal->CommandLineCount +=
+                                WideCharToMultiByte(CP_UTF8, 0,
+                                                    Chars, CharCount,
+                                                    Terminal->CommandLine + Terminal->CommandLineCount,
+                                                    SpaceLeft, 0, 0);
+                        }
+                    } break;
+                }
+            } break;
+        }
+    }
 }
 
 static DWORD WINAPI TerminalThread(LPVOID Param)
@@ -1043,28 +1194,40 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
     Terminal->DefaultBackgroundColor = 0x000c0c0c;
     Terminal->FastPipeReady = CreateEventW(0, TRUE, FALSE, 0);
     Terminal->FastPipeTrigger.hEvent = Terminal->FastPipeReady;
+    Terminal->PipeSize = 16*1024*1024;
 
     ClearCursor(Terminal, &Terminal->RunningCursor);
 
-    DWORD PipeSize = 16*1024*1024;
-
+    // TODO(casey): I believe this should probably be sized to be the same
+    // as the window at a minimum, because if it isn't, you may run into
+    // pathological cases where the wrong glyph is rendered.  The alternative
+    // would be forcing flushes of the pipe when the total number of recycles
+    // in a frame reaches the total number of glyphs in the cache.  Since the
+    // basically never happens, you don't see any bugs with it, but it
+    // theoretically _could_ happen if the texture size isn't large enough
+    // to fit one whole screen of glyphs.
     Terminal->REFTERM_TEXTURE_WIDTH = 2048;
     Terminal->REFTERM_TEXTURE_HEIGHT = 2048;
 
     // TODO(casey): Auto-size this, somehow?  The TransferHeight effectively restricts the maximum size of the
     // font, so it may want to be "grown" based on the font size selected.
-    Terminal->TransferWidth = 512;
-    Terminal->TransferHeight = 128;
+    Terminal->TransferWidth = 1024;
+    Terminal->TransferHeight = 512;
 
     Terminal->REFTERM_MAX_WIDTH = 1024;
     Terminal->REFTERM_MAX_HEIGHT = 1024;
 
-    Terminal->Renderer = AcquireD3D11Renderer(Terminal->Window, 0);
+    int DebugD3D11 = 0;
+#if _DEBUG
+    DebugD3D11 = 1;
+#endif
+
+    Terminal->Renderer = AcquireD3D11Renderer(Terminal->Window, DebugD3D11);
     SetD3D11GlyphCacheDim(&Terminal->Renderer, Terminal->REFTERM_TEXTURE_WIDTH, Terminal->REFTERM_TEXTURE_HEIGHT);
     SetD3D11GlyphTransferDim(&Terminal->Renderer, Terminal->TransferWidth, Terminal->TransferHeight);
 
     Terminal->GlyphGen = AllocateGlyphGenerator(Terminal->TransferWidth, Terminal->TransferHeight, Terminal->Renderer.GlyphTransferSurface);
-    Terminal->ScrollBackBuffer = AllocateSourceBuffer(PipeSize);
+    Terminal->ScrollBackBuffer = AllocateSourceBuffer(Terminal->PipeSize);
 
     ScriptRecordDigitSubstitution(LOCALE_USER_DEFAULT, &Terminal->Partitioner.UniDigiSub); // TODO(casey): Move this out to the stored code
     ScriptApplyDigitSubstitution(&Terminal->Partitioner.UniDigiSub, &Terminal->Partitioner.UniControl, &Terminal->Partitioner.UniState);
@@ -1080,9 +1243,9 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
     AppendOutput(Terminal, "\n"); // TODO(casey): Better line startup - this is here just to initialize the running cursor.
     AppendOutput(Terminal, "Refterm v%u\n", REFTERM_VERSION);
     AppendOutput(Terminal,
-                 "THIS IS \x1b[38;2;255;0;0m\x1b[5mNOT\x1b[0m A REAL TERMINAL.\r\n"
-                 "It is a reference renderer for demonstrating how to easily build relatively efficient terminal displays.\r\n"
-                 "\x1b[38;2;255;0;0m\x1b[5mDO NOT\x1b[0m attempt to use this as your terminal, or you will be very sad.\r\n"
+                     "THIS IS \x1b[38;2;255;0;0m\x1b[5mNOT\x1b[0m A REAL \x1b[9mTERMINAL\x1b[0m.\r\n"
+                     "It is a reference renderer for demonstrating how to easily build relatively efficient terminal displays.\r\n"
+                     "\x1b[38;2;255;0;0m\x1b[5m\x1b[4mDO NOT\x1b[0m attempt to use this as your terminal, or you will be \x1b[2mvery\x1b[0m sad.\r\n"
                  );
 
     int BlinkMS = 500; // TODO(casey): Use this in blink determination
@@ -1109,114 +1272,14 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
         {
             HANDLE Handles[8];
             DWORD HandleCount = 0;
-            
+
             Handles[HandleCount++] = Terminal->FastPipeReady;
             if(Terminal->Legacy_ReadStdOut != INVALID_HANDLE_VALUE) Handles[HandleCount++] = Terminal->Legacy_ReadStdOut;
             if(Terminal->Legacy_ReadStdError != INVALID_HANDLE_VALUE) Handles[HandleCount++] = Terminal->Legacy_ReadStdError;
             MsgWaitForMultipleObjects(HandleCount, Handles, FALSE, BlinkMS, QS_ALLINPUT);
         }
 
-        MSG Message;
-        while(PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
-        {
-            switch(Message.message)
-            {
-                case WM_QUIT:
-                {
-                    Terminal->Quit = 1;
-                } break;
-
-                case WM_KEYDOWN:
-                {
-                    switch(Message.wParam)
-                    {
-                        case VK_PRIOR:
-                        {
-                            Terminal->ViewingLineOffset -= Terminal->ScreenBuffer.DimY/2;
-                        } break;
-
-                        case VK_NEXT:
-                        {
-                            Terminal->ViewingLineOffset += Terminal->ScreenBuffer.DimY/2;
-                        } break;
-                    }
-
-                    if(Terminal->ViewingLineOffset > 0)
-                    {
-                        Terminal->ViewingLineOffset = 0;
-                    }
-
-                    if(Terminal->ViewingLineOffset < -(int)Terminal->LineCount)
-                    {
-                        Terminal->ViewingLineOffset = -(int)Terminal->LineCount;
-                    }
-                } break;
-
-                case WM_CHAR:
-                {
-                    switch(Message.wParam)
-                    {
-                        case VK_BACK:
-                        {
-                            while((Terminal->CommandLineCount > 0) &&
-                                      IsUTF8Extension(Terminal->CommandLine[Terminal->CommandLineCount - 1]))
-                            {
-                                --Terminal->CommandLineCount;
-                            }
-
-                            if(Terminal->CommandLineCount > 0)
-                            {
-                                --Terminal->CommandLineCount;
-                            }
-                        } break;
-
-                        case VK_RETURN:
-                        {
-                            ExecuteCommandLine(Terminal, PipeSize);
-                            Terminal->CommandLineCount = 0;
-                            Terminal->ViewingLineOffset = 0;
-                        } break;
-
-                        default:
-                        {
-                            wchar_t Char = (wchar_t)Message.wParam;
-                            wchar_t Chars[2];
-                            int CharCount = 0;
-
-                            if(IS_HIGH_SURROGATE(Char))
-                            {
-                                LastChar = Char;
-                            }
-                            else if(IS_LOW_SURROGATE(Char))
-                            {
-                                if(IS_SURROGATE_PAIR(LastChar, Char))
-                                {
-                                    Chars[0] = LastChar;
-                                    Chars[1] = Char;
-                                    CharCount = 2;
-                                }
-                                LastChar = 0;
-                            }
-                            else
-                            {
-                                Chars[0] = Char;
-                                CharCount = 1;
-                            }
-
-                            if(CharCount)
-                            {
-                                DWORD SpaceLeft = ArrayCount(Terminal->CommandLine) - Terminal->CommandLineCount;
-                                Terminal->CommandLineCount +=
-                                    WideCharToMultiByte(CP_UTF8, 0,
-                                                        Chars, CharCount,
-                                                        Terminal->CommandLine + Terminal->CommandLineCount,
-                                                        SpaceLeft, 0, 0);
-                            }
-                        } break;
-                    }
-                } break;
-            }
-        }
+        ProcessMessages(Terminal);
 
         RECT Rect;
         GetClientRect(Terminal->Window, &Rect);
@@ -1248,13 +1311,13 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
             int FastIn = UpdateTerminalBuffer(Terminal, Terminal->FastPipe);
             int SlowIn = UpdateTerminalBuffer(Terminal, Terminal->Legacy_ReadStdOut);
             int ErrIn = UpdateTerminalBuffer(Terminal, Terminal->Legacy_ReadStdError);
-            
+
             if(!SlowIn && (Terminal->Legacy_ReadStdOut != INVALID_HANDLE_VALUE))
             {
                 CloseHandle(Terminal->Legacy_ReadStdOut); // TODO(casey): Not sure if this is supposed to be called?
                 Terminal->Legacy_ReadStdOut = INVALID_HANDLE_VALUE;
             }
-            
+
             if(!ErrIn && (Terminal->Legacy_ReadStdError != INVALID_HANDLE_VALUE))
             {
                 CloseHandle(Terminal->Legacy_ReadStdError); // TODO(casey): Not sure if this is supposed to be called?
@@ -1263,10 +1326,10 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
         }
         while((Terminal->Renderer.FrameLatencyWaitableObject != INVALID_HANDLE_VALUE) &&
                   (WaitForSingleObject(Terminal->Renderer.FrameLatencyWaitableObject, 0) == WAIT_TIMEOUT));
-        
+
         ResetEvent(Terminal->FastPipeReady);
         ReadFile(Terminal->FastPipe, 0, 0, 0, &Terminal->FastPipeTrigger);
-            
+
         LayoutLines(Terminal);
 
         // TODO(casey): Split RendererDraw into two!

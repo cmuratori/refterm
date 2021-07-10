@@ -270,14 +270,19 @@ static glyph_state FindGlyphEntryByHash(glyph_table *Table, glyph_hash RunHash)
     return State;
 }
 
-static void InitializeDirectGlyphTable(glyph_table_params Params, gpu_glyph_index *Table)
+static void InitializeDirectGlyphTable(glyph_table_params Params, gpu_glyph_index *Table, int SkipZeroSlot)
 {
     Assert(Params.CacheTileCountInX >= 1);
-
-    uint32_t X = 1;
+    
+    if(SkipZeroSlot)
+    {
+        SkipZeroSlot = 1;
+    }
+        
+    uint32_t X = SkipZeroSlot;
     uint32_t Y = 0;
     for(uint32_t EntryIndex = 0;
-        EntryIndex < Params.ReservedTileCount;
+        EntryIndex < (Params.ReservedTileCount - SkipZeroSlot);
         ++EntryIndex)
     {
         if(X >= Params.CacheTileCountInX)
@@ -325,16 +330,13 @@ static glyph_table *PlaceGlyphTableInMemory(glyph_table_params Params, void *Mem
 
         memset(Result->HashTable, 0, Result->HashCount*sizeof(Result->HashTable[0]));
 
-        // NOTE(casey): 0,0 is never used, because it is the "null" tile, which
-        // can therefore be used in any case where there is "no glyph" reported at all by
-        // the glyph generator.
-        uint32_t StartingTile = (1 + Params.ReservedTileCount);
+        uint32_t StartingTile = Params.ReservedTileCount;
 
         glyph_entry *Sentinel = GetSentinel(Result);
         uint32_t X = StartingTile % Params.CacheTileCountInX;
         uint32_t Y = StartingTile / Params.CacheTileCountInX;
         for(uint32_t EntryIndex = 0;
-            EntryIndex < (Params.EntryCount - 1);
+            EntryIndex < Params.EntryCount;
             ++EntryIndex)
         {
             if(X >= Params.CacheTileCountInX)
@@ -344,7 +346,14 @@ static glyph_table *PlaceGlyphTableInMemory(glyph_table_params Params, void *Mem
             }
 
             glyph_entry *Entry = GetEntry(Result, EntryIndex);
-            Entry->NextWithSameHash = EntryIndex + 1;
+            if((EntryIndex+1) < Params.EntryCount)
+            {
+                Entry->NextWithSameHash = EntryIndex + 1;
+            }
+            else
+            {
+                Entry->NextWithSameHash = 0;
+            }
             Entry->GPUIndex = PackGlyphCachePoint(X, Y);
 
             Entry->FilledState = 0;

@@ -5,6 +5,10 @@ typedef struct
     uint32_t TopLeftMargin[2];
     uint32_t BlinkModulate;
     uint32_t MarginColor;
+    uint32_t StrikeMin;
+    uint32_t StrikeMax;
+    uint32_t UnderlineMin;
+    uint32_t UnderlineMax;
 } renderer_const_buffer;
 
 #define RENDERER_CELL_BLINK 0x80000000
@@ -55,6 +59,5 @@ typedef struct
 
 static d3d11_renderer AcquireD3D11Renderer(HWND Window, int EnableDebugging);
 
-static void ClearD3D11GlyphTexture(d3d11_renderer *Renderer);
 static void SetD3D11MaxCellCount(d3d11_renderer *Renderer, uint32_t Count);
 static void SetD3D11GlyphCacheDim(d3d11_renderer *Renderer, uint32_t Width, uint32_t Height);

@@ -25,34 +25,37 @@ int main(int ArgCount, char **Args)
     char *Buffer = (char *)malloc(BufferSize);
     if(Buffer)
     {
-        if(ArgCount <= 1)
+        for(int ArgIndex = 1;
+            ArgIndex < ArgCount;
+            ++ArgIndex)
         {
-            for(size_t At = 0; At < BufferSize; ++At)
+            int LongLine = (strcmp(Args[ArgIndex], "-longline") == 0);
+            int ManyLine = (strcmp(Args[ArgIndex], "-manyline") == 0);
+            if(LongLine || ManyLine)
             {
-                int Pick = rand()%28;
-                Buffer[At] = 'a' + Pick;;
-                if(Pick == 27) Buffer[At] = '\n';
-            }
+                int TotalCharCount = ManyLine ? 27 : 26;
+                for(size_t At = 0; At < BufferSize; ++At)
+                {
+                    int Pick = rand()%TotalCharCount;
+                    Buffer[At] = 'a' + Pick;
+                    if(ManyLine && (Pick == 26)) Buffer[At] = '\n';
+                }
 
-            clock_t Start = clock();
-            while(TotalTransfer < 1024*1024*1024)
-            {
-                DWORD ByteCount = 0;
-                WriteFile(StdOut, Buffer, (DWORD)BufferSize, &ByteCount, 0);
-                TotalTransfer += ByteCount;
+                clock_t Start = clock();
+                while(TotalTransfer < 1024*1024*1024)
+                {
+                    DWORD ByteCount = 0;
+                    WriteFile(StdOut, Buffer, (DWORD)BufferSize, &ByteCount, 0);
+                    TotalTransfer += ByteCount;
+                }
+                clock_t End = clock();
+                Elapsed += (double)(End - Start) / (double)CLOCKS_PER_SEC;
             }
-            clock_t End = clock();
-            Elapsed += (double)(End - Start) / (double)CLOCKS_PER_SEC;
-        }
-        else
-        {
-            for(int ArgIndex = 1;
-                ArgIndex < ArgCount;
-                ++ArgIndex)
+            else
             {
                 char *FileName = Args[ArgIndex];
                 HANDLE File = CreateFileA(FileName, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING,
-                                              FILE_ATTRIBUTE_NORMAL, 0);
+                                          FILE_ATTRIBUTE_NORMAL, 0);
                 if(File != INVALID_HANDLE_VALUE)
                 {
                     clock_t Start = clock();
@@ -74,8 +77,12 @@ int main(int ArgCount, char **Args)
             }
         }
 
-        fprintf(stdout, "\n\nTotal sink time: %.03fs (%fgb/s)\n",
-                Elapsed, TotalTransfer / (1024.0*1024.0*1024.0*Elapsed));
+        double GBs = 0;
+        if(Elapsed)
+        {
+            GBs = TotalTransfer / (1024.0*1024.0*1024.0*Elapsed);
+        }
+        fprintf(stdout, "\n\nTotal sink time: %.03fs (%fgb/s)\n", Elapsed, GBs);
 
         free(Buffer);
     }
