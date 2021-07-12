@@ -150,7 +150,8 @@ extern "C" int DWriteSetFont(glyph_generator *GlyphGen, wchar_t *FontName, uint3
 extern "C" void DWriteDrawText(glyph_generator *GlyphGen, int StringLen, WCHAR *String,
                                uint32_t Left, uint32_t Top, uint32_t Right, uint32_t Bottom,
                                struct ID2D1RenderTarget *RenderTarget,
-                               struct ID2D1SolidColorBrush *FillBrush)
+                               struct ID2D1SolidColorBrush *FillBrush,
+                               float XScale, float YScale)
 {
     D2D1_RECT_F Rect;
     
@@ -159,6 +160,8 @@ extern "C" void DWriteDrawText(glyph_generator *GlyphGen, int StringLen, WCHAR *
     Rect.right = (float)Right;
     Rect.bottom = (float)Bottom;
 
+    RenderTarget->SetTransform(D2D1::Matrix3x2F::Scale(D2D1::Size(XScale, YScale),
+                               D2D1::Point2F(0.0f, 0.0f)));
     RenderTarget->BeginDraw();
     RenderTarget->Clear();
     RenderTarget->DrawText(String, StringLen, GlyphGen->TextFormat, &Rect, FillBrush,

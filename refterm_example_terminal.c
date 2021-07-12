@@ -424,14 +424,14 @@ static void ParseWithUniscribe(example_terminal *Terminal, source_buffer_range U
             ++CheckIndex)
         {
             SCRIPT_LOGATTR Attr = Partitioner->Log[CheckIndex];
-            int ShouldBreak = 0;
+            int ShouldBreak = (Str[CheckIndex] == ' ');;
             if(IsComplex)
             {
-                ShouldBreak = Attr.fSoftBreak;
+                ShouldBreak |= Attr.fSoftBreak;
             }
             else
             {
-                ShouldBreak = Attr.fCharStop;
+                ShouldBreak |= Attr.fCharStop;
             }
 
             if(ShouldBreak) Partitioner->SegP[SegCount++] = CheckIndex;
@@ -481,9 +481,9 @@ static void ParseWithUniscribe(example_terminal *Terminal, source_buffer_range U
 
                     int Prepped = 0;
                     glyph_hash RunHash = ComputeGlyphHash(2*ThisCount, (char unsigned *)Run, DefaultSeed);
-                    uint32_t TileCount = GetTileCount(&Terminal->GlyphGen, Terminal->GlyphTable, ThisCount, Run, RunHash);
+                    glyph_dim GlyphDim = GetGlyphDim(&Terminal->GlyphGen, Terminal->GlyphTable, ThisCount, Run, RunHash);
                     for(uint32_t TileIndex = 0;
-                        TileIndex < TileCount;
+                        TileIndex < GlyphDim.TileCount;
                         ++TileIndex)
                     {
                         renderer_cell *Cell = GetCell(&Terminal->ScreenBuffer, Cursor->At);
@@ -495,12 +495,12 @@ static void ParseWithUniscribe(example_terminal *Terminal, source_buffer_range U
                             {
                                 if(!Prepped)
                                 {
-                                    PrepareTilesForTransfer(&Terminal->GlyphGen, &Terminal->Renderer, ThisCount, Run, TileCount);
+                                    PrepareTilesForTransfer(&Terminal->GlyphGen, &Terminal->Renderer, ThisCount, Run, GlyphDim);
                                     Prepped = 1;
                                 }
 
                                 TransferTile(&Terminal->GlyphGen, &Terminal->Renderer, TileIndex, Entry.GPUIndex);
-                                UpdateGlyphCacheEntry(Terminal->GlyphTable, Entry.ID, GlyphState_Rasterized, TileCount);
+                                UpdateGlyphCacheEntry(Terminal->GlyphTable, Entry.ID, GlyphState_Rasterized, Entry.DimX, Entry.DimY);
                             }
 
                             glyph_props Props = Cursor->Props;
@@ -549,17 +549,17 @@ static int ParseLineIntoGlyphs(example_terminal *Terminal, source_buffer_range R
         else if(ContainsComplexChars)
         {
             /* TODO(casey): Currently, if you have a long line that force-splits, it will not
-               recombine properly with Unicode.  I _DO NOT_ think this should be fixed in 
+               recombine properly with Unicode.  I _DO NOT_ think this should be fixed in
                the line parser.  Instead, the fix should be what should happen here to begin
                with, which is that the glyph chunking should happen in a state machine,
                NOT using buffer runs like Uniscribe does.
-              
+
                So I believe the _correct_ design here is that you have a state machine instead
                of Uniscribe for complex grapheme clusters, and _that_ will "just work" here
                as well as being much much faster than the current path, which is very slow
                because of Uniscribe _and_ is limited to intermediate buffer sizes.
             */
-            
+
             // NOTE(casey): If it's not an escape, and this line contains fancy Unicode stuff,
             // it's something we need to pass to a shaper to find out how it
             // has to be segmented.  Which sadly is Uniscribe at this point :(
@@ -600,9 +600,9 @@ static int ParseLineIntoGlyphs(example_terminal *Terminal, source_buffer_range R
                     glyph_state Entry = FindGlyphEntryByHash(Terminal->GlyphTable, RunHash);
                     if(Entry.FilledState != GlyphState_Rasterized)
                     {
-                        PrepareTilesForTransfer(&Terminal->GlyphGen, &Terminal->Renderer, 1, &CodePoint, 1);
+                        PrepareTilesForTransfer(&Terminal->GlyphGen, &Terminal->Renderer, 1, &CodePoint, GetSingleTileUnitDim());
                         TransferTile(&Terminal->GlyphGen, &Terminal->Renderer, 0, Entry.GPUIndex);
-                        UpdateGlyphCacheEntry(Terminal->GlyphTable, Entry.ID, GlyphState_Rasterized, 1);
+                        UpdateGlyphCacheEntry(Terminal->GlyphTable, Entry.ID, GlyphState_Rasterized, Entry.DimX, Entry.DimY);
                     }
                     GPUIndex = Entry.GPUIndex;
                 }
@@ -863,7 +863,7 @@ RevertToDefaultFont(example_terminal *Terminal)
     Terminal->RequestedFontHeight = 25;
 #else
     wsprintfW(Terminal->RequestedFontName, L"%s", L"Cascadia Mono");
-    Terminal->RequestedFontHeight = 15;
+    Terminal->RequestedFontHeight = 17;
 #endif
 }
 
@@ -871,14 +871,6 @@ static int
 RefreshFont(example_terminal *Terminal)
 {
     int Result = 0;
-
-    //
-    // NOTE(casey): Tell the glyph generator to switch to the new font.
-    //
-
-    uint32_t GenFlags = 0;
-    if(Terminal->RequestClearType) GenFlags |= GlyphGen_UseClearType;
-    if(Terminal->RequestDirectWrite) GenFlags |= GlyphGen_UseDirectWrite;
 
     //
     // NOTE(casey): Set up the mapping table between run-hashes and glyphs
@@ -894,7 +886,7 @@ RefreshFont(example_terminal *Terminal)
     // to prevent large fonts from overflowing.
     for(int Try = 0; Try <= 1; ++Try)
     {
-        Result = SetFont(&Terminal->GlyphGen, GenFlags, Terminal->RequestedFontName, Terminal->RequestedFontHeight);
+        Result = SetFont(&Terminal->GlyphGen, Terminal->RequestedFontName, Terminal->RequestedFontHeight);
         if(Result)
         {
             Params.CacheTileCountInX = SafeRatio1(Terminal->REFTERM_TEXTURE_WIDTH, Terminal->GlyphGen.FontWidth);
@@ -930,19 +922,21 @@ RefreshFont(example_terminal *Terminal)
     // NOTE(casey): Pre-rasterize all the ASCII characters, since they are directly mapped rather than hash-mapped.
     //
 
+    glyph_dim UnitDim = GetSingleTileUnitDim();
+
     for(uint32_t TileIndex = 0;
         TileIndex < ArrayCount(Terminal->ReservedTileTable);
         ++TileIndex)
     {
         wchar_t Letter = MinDirectCodepoint + TileIndex;
-        PrepareTilesForTransfer(&Terminal->GlyphGen, &Terminal->Renderer, 1, &Letter, 1);
+        PrepareTilesForTransfer(&Terminal->GlyphGen, &Terminal->Renderer, 1, &Letter, UnitDim);
         TransferTile(&Terminal->GlyphGen, &Terminal->Renderer, 0, Terminal->ReservedTileTable[TileIndex]);
     }
 
     // NOTE(casey): Clear the reserved 0 tile
     wchar_t Nothing = 0;
     gpu_glyph_index ZeroTile = {0};
-    PrepareTilesForTransfer(&Terminal->GlyphGen, &Terminal->Renderer, 0, &Nothing, 1);
+    PrepareTilesForTransfer(&Terminal->GlyphGen, &Terminal->Renderer, 0, &Nothing, UnitDim);
     TransferTile(&Terminal->GlyphGen, &Terminal->Renderer, 0, ZeroTile);
 
     return Result;
@@ -983,8 +977,6 @@ static void ExecuteCommandLine(example_terminal *Terminal)
         AppendOutput(Terminal, "Size: %u x %u\n", Terminal->ScreenBuffer.DimX, Terminal->ScreenBuffer.DimY);
         AppendOutput(Terminal, "Fast pipe: %s\n", Terminal->EnableFastPipe ? "ON" : "off");
         AppendOutput(Terminal, "Font: %S %u\n", Terminal->RequestedFontName, Terminal->RequestedFontHeight);
-        AppendOutput(Terminal, "ClearType: %s\n", Terminal->RequestClearType ? "ON" : "off");
-        AppendOutput(Terminal, "DirectWrite: %s\n", Terminal->RequestDirectWrite ? "ON" : "off");
         AppendOutput(Terminal, "Line Wrap: %s\n", Terminal->LineWrap ? "ON" : "off");
         AppendOutput(Terminal, "Debug: %s\n", Terminal->DebugHighlighting ? "ON" : "off");
         AppendOutput(Terminal, "Throttling: %s\n", !Terminal->NoThrottle ? "ON" : "off");
@@ -1017,18 +1009,6 @@ static void ExecuteCommandLine(example_terminal *Terminal)
 
         RefreshFont(Terminal);
         AppendOutput(Terminal, "Font: %S\n", Terminal->RequestedFontName);
-    }
-    else if(StringsAreEqual(Terminal->CommandLine, "cleartype"))
-    {
-        Terminal->RequestClearType = !Terminal->RequestClearType;
-        AppendOutput(Terminal, "ClearType: %s\n", Terminal->RequestClearType ? "ON" : "off");
-        RefreshFont(Terminal);
-    }
-    else if(StringsAreEqual(Terminal->CommandLine, "directwrite"))
-    {
-        Terminal->RequestDirectWrite = !Terminal->RequestDirectWrite;
-        AppendOutput(Terminal, "DirectWrite: %s\n", Terminal->RequestDirectWrite ? "ON" : "off");
-        RefreshFont(Terminal);
     }
     else if(StringsAreEqual(Terminal->CommandLine, "fontsize"))
     {
@@ -1191,11 +1171,11 @@ static void ProcessMessages(example_terminal *Terminal)
     }
 }
 
+static char OpeningMessage[] = { 0xE0, 0xA4, 0x9C, 0xE0, 0xA5, 0x8B, 0x20, 0xE0, 0xA4, 0xB8, 0xE0, 0xA5, 0x8B, 0x20, 0xE0, 0xA4, 0xB0, 0xE0, 0xA4, 0xB9, 0xE0, 0xA4, 0xBE, 0x20, 0xE0, 0xA4, 0xB9, 0xE0, 0xA5, 0x8B, 0x20, 0xE0, 0xA4, 0x89, 0xE0, 0xA4, 0xB8, 0xE0, 0xA5, 0x87, 0x20, 0xE0, 0xA4, 0xA4, 0xE0, 0xA5, 0x8B, 0x20, 0xE0, 0xA4, 0x9C, 0xE0, 0xA4, 0x97, 0xE0, 0xA4, 0xBE, 0x20, 0xE0, 0xA4, 0xB8, 0xE0, 0xA4, 0x95, 0xE0, 0xA4, 0xA4, 0xE0, 0xA5, 0x87, 0x20, 0xE0, 0xA4, 0xB9, 0xE0, 0xA5, 0x88, 0xE0, 0xA4, 0x82, 0x2C, 0x20, 0xE0, 0xA4, 0xB2, 0xE0, 0xA5, 0x87, 0xE0, 0xA4, 0x95, 0xE0, 0xA4, 0xBF, 0xE0, 0xA4, 0xA8, 0x20, 0xE0, 0xA4, 0x9C, 0xE0, 0xA5, 0x8B, 0x20, 0xE0, 0xA4, 0x86, 0xE0, 0xA4, 0x81, 0xE0, 0xA4, 0x96, 0xE0, 0xA5, 0x87, 0x20, 0xE0, 0xA4, 0xAE, 0xE0, 0xA5, 0x82, 0xE0, 0xA4, 0x81, 0xE0, 0xA4, 0xA6, 0x20, 0xE0, 0xA4, 0x95, 0xE0, 0xA4, 0xB0, 0x20, 0xE0, 0xA4, 0xB8, 0xE0, 0xA5, 0x8B, 0xE0, 0xA4, 0xA8, 0xE0, 0xA5, 0x87, 0x20, 0xE0, 0xA4, 0x95, 0xE0, 0xA4, 0xBE, 0x20, 0xE0, 0xA4, 0x85, 0xE0, 0xA4, 0xAD, 0xE0, 0xA4, 0xBF, 0xE0, 0xA4, 0xA8, 0xE0, 0xA4, 0xAF, 0x20, 0xE0, 0xA4, 0x95, 0xE0, 0xA4, 0xB0, 0x20, 0xE0, 0xA4, 0xB0, 0xE0, 0xA4, 0xB9, 0xE0, 0xA4, 0xBE, 0x20, 0xE0, 0xA4, 0xB9, 0xE0, 0xA5, 0x8B, 0x20, 0xE0, 0xA4, 0x89, 0xE0, 0xA4, 0xB8, 0xE0, 0xA5, 0x87, 0x20, 0xE0, 0xA4, 0x95, 0xE0, 0xA5, 0x88, 0xE0, 0xA4, 0xB8, 0xE0, 0xA5, 0x87, 0x20, 0xE0, 0xA4, 0x9C, 0xE0, 0xA4, 0x97, 0xE0, 0xA4, 0xBE, 0xE0, 0xA4, 0x8F, 0xE0, 0xA4, 0x82, 0xE0, 0xA4, 0x97, 0xE0, 0xA5, 0x87, 0x20, 0x7C, 0x20, '\n' };
 static DWORD WINAPI TerminalThread(LPVOID Param)
 {
     example_terminal *Terminal = VirtualAlloc(0, sizeof(example_terminal), MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
     Terminal->Window = (HWND)Param;
-    Terminal->RequestDirectWrite = 1;
     Terminal->LineWrap = 1;
     Terminal->ChildProcess = INVALID_HANDLE_VALUE;
     Terminal->Legacy_WriteStdIn = INVALID_HANDLE_VALUE;
@@ -1260,6 +1240,10 @@ static DWORD WINAPI TerminalThread(LPVOID Param)
                      "\x1b[38;2;255;0;0m\x1b[5m\x1b[4mDO NOT\x1b[0m attempt to use this as your terminal, or you will be \x1b[2mvery\x1b[0m sad.\r\n"
                  );
 
+    AppendOutput(Terminal, "\n");
+    AppendOutput(Terminal, OpeningMessage);
+    AppendOutput(Terminal, "\n");
+    
     int BlinkMS = 500; // TODO(casey): Use this in blink determination
     int MinTermSize = 512;
     uint32_t Width = MinTermSize;

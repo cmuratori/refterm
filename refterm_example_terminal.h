@@ -102,8 +102,6 @@ typedef struct
 
     wchar_t RequestedFontName[64];
     uint32_t RequestedFontHeight;
-    int RequestClearType;
-    int RequestDirectWrite;
     int LineWrap;
 
     uint32_t DefaultForegroundColor;

@@ -16,8 +16,9 @@ struct glyph_entry
 
     // NOTE(casey): For user use:
     uint32_t FilledState;
-    uint32_t IndexCount;
-
+    uint16_t DimX;
+    uint16_t DimY;
+    
 #if DEBUG_VALIDATE_LRU
     size_t Ordering;
 #endif
@@ -96,12 +97,13 @@ static glyph_table_stats GetAndClearStats(glyph_table *Table)
     return Result;
 }
 
-static void UpdateGlyphCacheEntry(glyph_table *Table, uint32_t ID, uint32_t NewState, uint32_t NewIndexCount)
+static void UpdateGlyphCacheEntry(glyph_table *Table, uint32_t ID, uint32_t NewState, uint16_t NewDimX, uint16_t NewDimY)
 {
     glyph_entry *Entry = GetEntry(Table, ID);
 
     Entry->FilledState = NewState;
-    Entry->IndexCount = NewIndexCount;
+    Entry->DimX = NewDimX;
+    Entry->DimY = NewDimY;
 }
 
 #if DEBUG_VALIDATE_LRU
@@ -162,7 +164,7 @@ static void RecycleLRU(glyph_table *Table)
     Sentinel->NextWithSameHash = EntryIndex;
 
     // NOTE(casey): Clear the index count and state
-    UpdateGlyphCacheEntry(Table, EntryIndex, 0, 0);
+    UpdateGlyphCacheEntry(Table, EntryIndex, 0, 0, 0);
 
     ++Table->Stats.RecycleCount;
 }
@@ -186,7 +188,8 @@ static uint32_t PopFreeEntry(glyph_table *Table)
 
     Assert(Entry);
     Assert(Entry != Sentinel);
-    Assert(Entry->IndexCount == 0);
+    Assert(Entry->DimX == 0);
+    Assert(Entry->DimY == 0);
     Assert(Entry->FilledState == 0);
     Assert(Entry->NextWithSameHash == 0);
     Assert(Entry == GetEntry(Table, Result));
@@ -237,8 +240,9 @@ static glyph_state FindGlyphEntryByHash(glyph_table *Table, glyph_hash RunHash)
         Result = GetEntry(Table, EntryIndex);
         Assert(Result->FilledState == 0);
         Assert(Result->NextWithSameHash == 0);
-        Assert(Result->IndexCount == 0);
-
+        Assert(Result->DimX == 0);
+        Assert(Result->DimY == 0);
+        
         Result->NextWithSameHash = *Slot;
         Result->HashValue = RunHash;
         *Slot = EntryIndex;
@@ -263,7 +267,8 @@ static glyph_state FindGlyphEntryByHash(glyph_table *Table, glyph_hash RunHash)
 
     glyph_state State;
     State.ID = EntryIndex;
-    State.TileCount = Result->IndexCount;
+    State.DimX = Result->DimX;
+    State.DimY = Result->DimY;
     State.GPUIndex = Result->GPUIndex;
     State.FilledState = Result->FilledState;
 
@@ -357,8 +362,9 @@ static glyph_table *PlaceGlyphTableInMemory(glyph_table_params Params, void *Mem
             Entry->GPUIndex = PackGlyphCachePoint(X, Y);
 
             Entry->FilledState = 0;
-            Entry->IndexCount = 0;
-
+            Entry->DimX = 0;
+            Entry->DimY = 0;
+            
             ++X;
         }
 

@@ -1,81 +1,6 @@
-static void GDIInit(glyph_generator *GlyphGen)
+static int SetFont(glyph_generator *GlyphGen, wchar_t *FontName, uint32_t FontHeight)
 {
-    BITMAPINFOHEADER BitmapHeader =
-    {
-        .biSize = sizeof(BitmapHeader),
-        .biWidth = GlyphGen->TransferWidth,
-        .biHeight = -(int)GlyphGen->TransferHeight,
-        .biPlanes = 1,
-        .biBitCount = 32,
-        .biCompression = BI_RGB,
-    };
-
-    GlyphGen->DC = CreateCompatibleDC(0);
-    Assert(GlyphGen->DC);
-
-    void* Pixels;
-    GlyphGen->Bitmap = CreateDIBSection(GlyphGen->DC, &(BITMAPINFO){BitmapHeader}, DIB_RGB_COLORS, &Pixels, 0, 0);
-    Assert(GlyphGen->Bitmap);
-    SelectObject(GlyphGen->DC, GlyphGen->Bitmap);
-
-    GlyphGen->Pixels = (uint32_t *)Pixels;
-    GlyphGen->Pitch = 4*GlyphGen->TransferWidth;
-
-    SetTextColor(GlyphGen->DC, RGB(255, 255, 255));
-    SetBkColor(GlyphGen->DC, RGB(0, 0, 0));
-}
-
-static int GDISetFont(glyph_generator *GlyphGen, wchar_t *FontName, uint32_t FontHeight)
-{
-    int Result = 0;
-
-    if(GlyphGen->Font)
-    {
-        SelectObject(GlyphGen->DC, GlyphGen->OldFont);
-        DeleteObject(GlyphGen->Font);
-    }
-
-    GlyphGen->Font = CreateFontW(FontHeight, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS,
-                                 GlyphGen->UseClearType ? CLEARTYPE_QUALITY : ANTIALIASED_QUALITY, FIXED_PITCH, FontName);
-    if(GlyphGen->Font)
-    {
-        GlyphGen->OldFont = SelectObject(GlyphGen->DC, GlyphGen->Font);
-
-        TEXTMETRICW Metrics;
-        GetTextMetricsW(GlyphGen->DC, &Metrics);
-
-        // TODO(casey): Real cell size determination would go here - probably with input from the user?
-        GlyphGen->FontHeight = Metrics.tmHeight;
-        GlyphGen->FontWidth = Metrics.tmAveCharWidth + 1; // not sure why +1 is needed here
-        // GlyphGen.FontWidth = Metrics.tmMaxCharWidth; // not sure why +1 is needed here
-
-        Result = 1;
-    }
-
-    return Result;
-}
-
-static int SetFont(glyph_generator *GlyphGen, uint32_t Flags, wchar_t *FontName, uint32_t FontHeight)
-{
-    int Result = 0;
-
-    GlyphGen->UseClearType = Flags & GlyphGen_UseClearType;
-    GlyphGen->UseDWrite = 0;
-
-    if(Flags & GlyphGen_UseDirectWrite)
-    {
-        if(DWriteSetFont(GlyphGen, FontName, FontHeight))
-        {
-            Result = 1;
-            GlyphGen->UseDWrite = 1;
-        }
-    }
-
-    if(!Result)
-    {
-        Result = GDISetFont(GlyphGen, FontName, FontHeight);
-    }
-
+    int Result = DWriteSetFont(GlyphGen, FontName, FontHeight);
     return Result;
 }
 
@@ -87,7 +12,6 @@ static glyph_generator AllocateGlyphGenerator(uint32_t TransferWidth, uint32_t T
     GlyphGen.TransferWidth = TransferWidth;
     GlyphGen.TransferHeight = TransferHeight;
 
-    GDIInit(&GlyphGen);
     DWriteInit(&GlyphGen, GlyphTransferSurface);
 
     return GlyphGen;
@@ -102,64 +26,66 @@ static uint32_t GetExpectedTileCountForDimension(glyph_generator *GlyphGen, uint
     return Result;
 }
 
-static uint32_t GetTileCount(glyph_generator *GlyphGen, glyph_table *Table, size_t Count, wchar_t *String, glyph_hash RunHash)
+static glyph_dim GetSingleTileUnitDim(void)
+{
+    glyph_dim Result = {1, 1.0f, 1.0f};
+    return Result;
+}
+
+static glyph_dim GetGlyphDim(glyph_generator *GlyphGen, glyph_table *Table, size_t Count, wchar_t *String, glyph_hash RunHash)
 {
     /* TODO(casey): Windows can only 2^31 glyph runs - which
        seems fine, but... technically Unicode can have more than two
        billion combining characters, so I guess theoretically this
        code is broken - another "reason" to do a custom glyph rasterizer? */
+
+    glyph_dim Result = {0};
+
     DWORD StringLen = (DWORD)Count;
     Assert(StringLen == Count);
 
+    SIZE Size = {0};
     glyph_state Entry = FindGlyphEntryByHash(Table, RunHash);
     if(Entry.FilledState == GlyphState_None)
     {
         if(StringLen)
         {
-            SIZE Size = {0};
-            if(GlyphGen->UseDWrite)
-            {
-                Size = DWriteGetTextExtent(GlyphGen, StringLen, String);
-            }
-            else
-            {
-                GetTextExtentPointW(GlyphGen->DC, String, StringLen, &Size);
-            }
-
-            Entry.TileCount = SafeRatio1((uint16_t)(Size.cx + GlyphGen->FontWidth/2), GlyphGen->FontWidth);
-        }
-        else
-        {
-            Entry.TileCount = 0;
+            Size = DWriteGetTextExtent(GlyphGen, StringLen, String);
         }
 
-        UpdateGlyphCacheEntry(Table, Entry.ID, GlyphState_Sized, Entry.TileCount);
+        UpdateGlyphCacheEntry(Table, Entry.ID, GlyphState_Sized, (uint16_t)Size.cx, (uint16_t)Size.cy);
+    }
+    else
+    {
+        Size.cx = Entry.DimX;
+        Size.cy = Entry.DimY;
     }
 
-    uint16_t Result = Entry.TileCount;
+    Result.TileCount = SafeRatio1((uint16_t)(Size.cx + GlyphGen->FontWidth/2), GlyphGen->FontWidth);
+    
+    Result.XScale = 1.0f;
+    if((uint32_t)Size.cx > GlyphGen->FontWidth)
+    {
+        Result.XScale = SafeRatio1((float)(Result.TileCount*GlyphGen->FontWidth),
+                                   (float)(Size.cx));
+    }
+    
+    Result.YScale = 1.0f;
+    if((uint32_t)Size.cy > GlyphGen->FontHeight)
+    {
+        Result.YScale = SafeRatio1((float)GlyphGen->FontHeight, (float)Size.cy);
+    }
+        
     return Result;
 }
 
-static void PrepareTilesForTransfer(glyph_generator *GlyphGen, d3d11_renderer *Renderer, size_t Count, wchar_t *String, uint32_t TileCount)
+static void PrepareTilesForTransfer(glyph_generator *GlyphGen, d3d11_renderer *Renderer, size_t Count, wchar_t *String, glyph_dim Dim)
 {
     DWORD StringLen = (DWORD)Count;
     Assert(StringLen == Count);
 
-    if(GlyphGen->UseDWrite)
-    {
-        DWriteDrawText(GlyphGen, StringLen, String, 0, 0, GlyphGen->TransferWidth, GlyphGen->TransferHeight,
-                       Renderer->DWriteRenderTarget, Renderer->DWriteFillBrush);
-    }
-    else
-    {
-        PatBlt(GlyphGen->DC, 0, 0, TileCount*GlyphGen->FontWidth, GlyphGen->FontHeight, BLACKNESS);
-        if(!ExtTextOutW(GlyphGen->DC, 0, 0, ETO_OPAQUE, 0, String, StringLen, 0))
-        {
-            DWORD Error = GetLastError();
-            DWORD TestError = Error;
-            Assert(!"ExtTextOutW failure");
-        }
-    }
+    DWriteDrawText(GlyphGen, StringLen, String, 0, 0, GlyphGen->TransferWidth, GlyphGen->TransferHeight,
+                   Renderer->DWriteRenderTarget, Renderer->DWriteFillBrush, Dim.XScale, Dim.YScale);
 }
 
 static void TransferTile(glyph_generator *GlyphGen, d3d11_renderer *Renderer, uint32_t TileIndex, gpu_glyph_index DestIndex)
@@ -189,46 +115,25 @@ static void TransferTile(glyph_generator *GlyphGen, d3d11_renderer *Renderer, ui
        so large that it cannot be rasterized into the transfer buffer.  At some point, maybe
        we should warn about that and revert the font size to something smaller?
     */
-    
+
     if(Renderer->DeviceContext)
     {
         glyph_cache_point Point = UnpackGlyphCachePoint(DestIndex);
         uint32_t X = Point.X*GlyphGen->FontWidth;
         uint32_t Y = Point.Y*GlyphGen->FontHeight;
 
-        if(GlyphGen->UseDWrite)
+        D3D11_BOX SourceBox =
         {
-            D3D11_BOX SourceBox =
-            {
-                .left = (TileIndex)*GlyphGen->FontWidth,
-                .right = (TileIndex + 1)*GlyphGen->FontWidth,
-                .top = 0,
-                .bottom = GlyphGen->FontHeight,
-                .front = 0,
-                .back = 1,
-            };
+            .left = (TileIndex)*GlyphGen->FontWidth,
+            .right = (TileIndex + 1)*GlyphGen->FontWidth,
+            .top = 0,
+            .bottom = GlyphGen->FontHeight,
+            .front = 0,
+            .back = 1,
+        };
 
-            ID3D11DeviceContext_CopySubresourceRegion(Renderer->DeviceContext,
-                                                      (ID3D11Resource *)Renderer->GlyphTexture, 0, X, Y, 0,
-                                                      (ID3D11Resource *)Renderer->GlyphTransfer, 0, &SourceBox);
-        }
-        else
-        {
-            D3D11_BOX TexelBox =
-            {
-                .left = X,
-                .right = X + GlyphGen->FontWidth,
-                .top = Y,
-                .bottom = Y + GlyphGen->FontHeight,
-                .front = 0,
-                .back = 1,
-            };
-
-            Assert(((TileIndex + 1)*GlyphGen->FontWidth) <= GlyphGen->TransferWidth);
-
-            uint32_t *SourceCorner = GlyphGen->Pixels + TileIndex*GlyphGen->FontWidth;
-            ID3D11DeviceContext_UpdateSubresource(Renderer->DeviceContext, (ID3D11Resource*)Renderer->GlyphTexture,
-                                                  0, &TexelBox, SourceCorner, GlyphGen->Pitch, 0);
-        }
+        ID3D11DeviceContext_CopySubresourceRegion(Renderer->DeviceContext,
+                                                  (ID3D11Resource *)Renderer->GlyphTexture, 0, X, Y, 0,
+                                                  (ID3D11Resource *)Renderer->GlyphTransfer, 0, &SourceBox);
     }
 }

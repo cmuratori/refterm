@@ -22,7 +22,8 @@ int DWriteSetFont(glyph_generator *GlyphGen, wchar_t *FontName, uint32_t FontHei
 void DWriteDrawText(glyph_generator *GlyphGen, int StringLen, wchar_t *String,
                     uint32_t Left, uint32_t Top, uint32_t Right, uint32_t Bottom,
                     ID2D1RenderTarget *RenderTarget,
-                    ID2D1SolidColorBrush *FillBrush);
+                    ID2D1SolidColorBrush *FillBrush,
+                    float XScale, float YScale);
 
 SIZE DWriteGetTextExtent(glyph_generator *GlyphGen, int StringLen, wchar_t *String);
 

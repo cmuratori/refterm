@@ -19,6 +19,7 @@ int main(int ArgCount, char **Args)
 
     HANDLE StdOut = GetStdHandle(STD_OUTPUT_HANDLE);
 
+    int VTEnabled = 0;
     double Elapsed = 0.0;
     size_t TotalTransfer = 0;
     size_t BufferSize = 64*1024*1024;
@@ -51,6 +52,19 @@ int main(int ArgCount, char **Args)
                 clock_t End = clock();
                 Elapsed += (double)(End - Start) / (double)CLOCKS_PER_SEC;
             }
+            else if(strcmp(Args[ArgIndex], "-vt") == 0)
+            {
+#if _WIN32
+                if(!FastPipeAvailable)
+                {
+                    DWORD WinConMode = 0;
+                    DWORD EnableVirtualTerminalProcessing = 0x0004;
+                    GetConsoleMode(StdOut, &WinConMode);
+                    SetConsoleMode(StdOut, WinConMode | EnableVirtualTerminalProcessing);
+                }
+#endif
+                VTEnabled = 1;
+            }
             else
             {
                 char *FileName = Args[ArgIndex];
@@ -76,7 +90,12 @@ int main(int ArgCount, char **Args)
                 }
             }
         }
-
+        
+        if(VTEnabled)
+        {
+            fprintf(stdout, "\x1b[0m");
+        }
+        
         double GBs = 0;
         if(Elapsed)
         {

@@ -138,7 +138,8 @@ struct glyph_state
 
     // NOTE(casey): Technically these two values can be whatever you want.
     uint32_t FilledState;
-    uint32_t TileCount;
+    uint16_t DimX;
+    uint16_t DimY;
 };
 static glyph_state FindGlyphEntryByHash(glyph_table *Table, glyph_hash RunHash);
 
@@ -149,7 +150,7 @@ static glyph_state FindGlyphEntryByHash(glyph_table *Table, glyph_hash RunHash);
    the cache itself doesn't care about this at all - it is strictly for your code, so you can retrieve tile counts
    later and/or know that glyphs have been sized and/or rasterized.
 */
-static void UpdateGlyphCacheEntry(glyph_table *Table, uint32_t ID, uint32_t NewState, uint32_t TileCount);
+static void UpdateGlyphCacheEntry(glyph_table *Table, uint32_t ID, uint32_t NewState, uint16_t NewDimX, uint16_t NewDimY);
 
 /* NOTE(casey):
 
