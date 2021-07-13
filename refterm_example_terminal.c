@@ -229,7 +229,7 @@ static int ParseEscape(example_terminal *Terminal, source_buffer_range *Range, c
 
     wchar_t Command = 0;
     uint32_t ParamCount = 0;
-    uint32_t Params[8];
+    uint32_t Params[8] = {0};
     while((ParamCount < ArrayCount(Params)) && Range->Count)
     {
         char Token = PeekToken(Range, 0);
