@@ -1069,7 +1069,7 @@ static int IsUTF8Extension(char A)
 static void ProcessMessages(example_terminal *Terminal)
 {
     MSG Message;
-    while(PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
+    while(PeekMessageW(&Message, 0, 0, 0, PM_REMOVE))
     {
         switch(Message.message)
         {

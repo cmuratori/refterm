@@ -63,7 +63,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         case WM_CHAR:
         case WM_SIZE:
         {
-            PostThreadMessage(RenderThreadID, Message, WParam, LParam);
+            PostThreadMessageW(RenderThreadID, Message, WParam, LParam);
         } break;
 
         default:
