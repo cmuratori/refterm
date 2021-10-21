@@ -862,7 +862,7 @@ RevertToDefaultFont(example_terminal *Terminal)
     wsprintfW(Terminal->RequestedFontName, L"%s", L"Courier New");
     Terminal->RequestedFontHeight = 25;
 #else
-    wsprintfW(Terminal->RequestedFontName, L"%s", L"Cascadia Mono");
+    wsprintfW(Terminal->RequestedFontName, L"%s", L"Consolas");
     Terminal->RequestedFontHeight = 17;
 #endif
 }
