@@ -166,10 +166,9 @@ static char unsigned DefaultSeed[16] =
 static glyph_hash ComputeGlyphHash(size_t Count, char unsigned *At, char unsigned *Seedx16)
 {
     /* TODO(casey):
-
       Consider and test some alternate hash designs.  The hash here
       was the simplest thing to type in, but it is not necessarily
-      the best hash for the job.  It may be that less AES rounds
+      the best hash for the job.  It may be that fewer AES rounds
       would produce equivalently collision-free results for the
       problem space.  It may be that non-AES hashing would be
       better.  Some careful analysis would be nice.
@@ -185,9 +184,8 @@ static glyph_hash ComputeGlyphHash(size_t Count, char unsigned *At, char unsigne
 
     glyph_hash Result = {0};
 
-    // TODO(casey): Should there be an IV?
-    __m128i HashValue = _mm_cvtsi64_si128(Count);
-    HashValue = _mm_xor_si128(HashValue, _mm_loadu_si128((__m128i *)Seedx16));
+    __m128i PreviousHash;
+    __m128i HashValue = _mm_loadu_si128((__m128i *)Seedx16);
 
     size_t ChunkCount = Count / 16;
     while(ChunkCount--)
@@ -195,15 +193,15 @@ static glyph_hash ComputeGlyphHash(size_t Count, char unsigned *At, char unsigne
         __m128i In = _mm_loadu_si128((__m128i *)At);
         At += 16;
 
-        HashValue = _mm_xor_si128(HashValue, In);
-        HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
-        HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
-        HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
-        HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
+        PreviousHash = HashValue;
+        HashValue = _mm_aesdec_si128(HashValue, In);
+        HashValue = _mm_aesdec_si128(HashValue, In);
+        HashValue = _mm_aesdec_si128(HashValue, In);
+        HashValue = _mm_aesdec_si128(HashValue, In);
+        HashValue = _mm_xor_si128(HashValue, PreviousHash);
     }
 
     size_t Overhang = Count % 16;
-
 
 #if 0
     __m128i In = _mm_loadu_si128((__m128i *)At);
@@ -214,15 +212,20 @@ static glyph_hash ComputeGlyphHash(size_t Count, char unsigned *At, char unsigne
     __movsb((unsigned char *)Temp, At, Overhang);
     __m128i In = _mm_loadu_si128((__m128i *)Temp);
 #endif
-    In = _mm_and_si128(In, _mm_loadu_si128((__m128i *)(OverhangMask + 16 - Overhang)));
-    HashValue = _mm_xor_si128(HashValue, In);
-    HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
-    HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
-    HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
-    HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
+    // Compute padding depending on overhang length to prevent padding attacks
+    // Note: _mm_blendv_epi8 requires more configuration
+    __m128i Mask = _mm_loadu_si128((__m128i *)(OverhangMask + 16 - Overhang));
+    __m128i Padding = _mm_andnot_si128(Mask, _mm_set1_epi8((char)Overhang));
+    In = _mm_or_si128(_mm_and_si128(Mask, In), Padding);
+
+    PreviousHash = HashValue;
+    HashValue = _mm_aesdec_si128(HashValue, In);
+    HashValue = _mm_aesdec_si128(HashValue, In);
+    HashValue = _mm_aesdec_si128(HashValue, In);
+    HashValue = _mm_aesdec_si128(HashValue, In);
+    HashValue = _mm_xor_si128(HashValue, PreviousHash);
 
     Result.Value = HashValue;
-
     return Result;
 }
 
@@ -231,11 +234,12 @@ static glyph_hash ComputeHashForTileIndex(glyph_hash Tile0Hash, uint32_t TileInd
     __m128i HashValue = Tile0Hash.Value;
     if(TileIndex)
     {
-        HashValue = _mm_xor_si128(HashValue, _mm_set1_epi32(TileIndex));
-        HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
-        HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
-        HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
-        HashValue = _mm_aesdec_si128(HashValue, _mm_setzero_si128());
+        __m128i Key = _mm_set1_epi32(TileIndex);
+        HashValue = _mm_aesdec_si128(HashValue, Key);
+        HashValue = _mm_aesdec_si128(HashValue, Key);
+        HashValue = _mm_aesdec_si128(HashValue, Key);
+        HashValue = _mm_aesdec_si128(HashValue, Key);
+        HashValue = _mm_xor_si128(HashValue, Tile0Hash.Value);
     }
 
     glyph_hash Result = {HashValue};
