@@ -88,7 +88,17 @@ typedef struct
 
     wchar_t LastChar;
     uint32_t CommandLineCount;
-    char CommandLine[256];
+#define CommandLineSize 256
+    char CommandLine[CommandLineSize];
+
+#define CommandLineHistorySize 96
+    // TODO(Calin): This should really be a linked-list
+    struct {
+        uint32_t CommandLineCount;
+        char CommandLine[CommandLineSize];
+    } CommandLineHistory[CommandLineHistorySize];
+    uint32_t CommandLineHistoryCount;
+    uint32_t CommandLineHistoryCursor;
 
     int NoThrottle;
     int DebugHighlighting;
@@ -120,4 +130,3 @@ typedef struct
 #define MaxDirectCodepoint 126
     gpu_glyph_index ReservedTileTable[MaxDirectCodepoint - MinDirectCodepoint + 1];
 } example_terminal;
-

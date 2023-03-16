@@ -1039,6 +1039,19 @@ static void ExecuteCommandLine(example_terminal *Terminal)
     {
         AppendOutput(Terminal, "%s\n", B);
     }
+    else if (StringsAreEqual(Terminal->CommandLine, "history"))
+    {
+        const int ovr = Terminal->CommandLineHistoryCount > CommandLineHistorySize;
+        AppendOutput(Terminal, "History size: %u (max: %u)\n",
+                     ovr ? CommandLineHistorySize : Terminal->CommandLineHistoryCount,
+                     CommandLineHistorySize);
+        for (uint32_t n = 0, i = ovr ? Terminal->CommandLineHistoryCount - CommandLineHistorySize : 0;
+             i < Terminal->CommandLineHistoryCount;
+             ++i, ++n)
+        {
+            AppendOutput(Terminal, "%3u  %s\n", n, Terminal->CommandLineHistory[i % CommandLineHistorySize].CommandLine);
+        }
+    }
     else if(StringsAreEqual(Terminal->CommandLine, ""))
     {
     }
@@ -1058,6 +1071,80 @@ static void ExecuteCommandLine(example_terminal *Terminal)
             }
         }
     }
+}
+
+static void PushCommandHistory(example_terminal *Terminal)
+{
+    if (!Terminal->CommandLineCount)
+    {
+        Terminal->CommandLineHistoryCursor = 0; // indicate we are not going back/forth through history
+        return; // don't push empty lines to history
+    }
+    if (Terminal->CommandLineHistoryCount)
+    {
+        // check that top and command line don't match (don't push dupes)
+        const uint32_t top = (Terminal->CommandLineHistoryCount - 1) % CommandLineHistorySize;
+        char cmdTmp[CommandLineSize + 1];
+        memcpy(cmdTmp, Terminal->CommandLine, Terminal->CommandLineCount);
+        cmdTmp[Terminal->CommandLineCount] = 0;
+        if (StringsAreEqual(Terminal->CommandLineHistory[top].CommandLine, cmdTmp))
+        {
+            Terminal->CommandLineHistoryCursor = 0; // indicate we are not going back/forth through history
+            return; // don't push dupes to history
+        }
+    }
+    const uint32_t index = Terminal->CommandLineHistoryCount++ % CommandLineHistorySize;
+    Terminal->CommandLineHistory[index].CommandLineCount = Terminal->CommandLineCount;
+    memcpy(Terminal->CommandLineHistory[index].CommandLine, Terminal->CommandLine, CommandLineSize);
+    Terminal->CommandLineHistory[index].CommandLine[Terminal->CommandLineCount] = 0; // ensure NUL termination
+    Terminal->CommandLineHistoryCursor = 0; // indicate we are not going back/forth through history
+}
+
+static void CopyCommandHistoryCursorToCommandLine(example_terminal *Terminal)
+{
+    if (Terminal->CommandLineHistoryCount && Terminal->CommandLineHistoryCursor)
+    {
+        const uint32_t index = (Terminal->CommandLineHistoryCursor - 1) % CommandLineHistorySize;
+        memcpy(Terminal->CommandLine, Terminal->CommandLineHistory[index].CommandLine, CommandLineSize);
+        Terminal->CommandLineCount = Terminal->CommandLineHistory[index].CommandLineCount;
+    }
+}
+
+static void CommandHistoryPrev(example_terminal *Terminal)
+{
+    if (!Terminal->CommandLineHistoryCount)
+    {
+        // no history
+        Terminal->CommandLineHistoryCursor = 0;
+        return;
+    }
+    if (!Terminal->CommandLineHistoryCursor)
+    {
+        // no cursor set, initialize to 1 past end of history
+        Terminal->CommandLineHistoryCursor = 1 + Terminal->CommandLineHistoryCount;
+    }
+    else if (Terminal->CommandLineHistoryCount - (Terminal->CommandLineHistoryCursor-1) >= CommandLineHistorySize)
+    {
+        // at beginning of history
+        return;
+    }
+    Terminal->CommandLineHistoryCursor--;
+    CopyCommandHistoryCursorToCommandLine(Terminal);
+}
+
+static void CommandHistoryNext(example_terminal *Terminal)
+{
+    if (!Terminal->CommandLineHistoryCursor
+        || Terminal->CommandLineHistoryCursor >= Terminal->CommandLineHistoryCount)
+    {
+        // not iterating back through history, or at top of history/no history
+        // clear line, clear cursor
+        Terminal->CommandLineCount = 0;
+        Terminal->CommandLineHistoryCursor = 0;
+        return;
+    }
+    Terminal->CommandLineHistoryCursor++;
+    CopyCommandHistoryCursorToCommandLine(Terminal);
 }
 
 static int IsUTF8Extension(char A)
@@ -1090,6 +1177,16 @@ static void ProcessMessages(example_terminal *Terminal)
                     case VK_NEXT:
                     {
                         Terminal->ViewingLineOffset += Terminal->ScreenBuffer.DimY/2;
+                    } break;
+
+                    case VK_UP:
+                    {
+                        CommandHistoryPrev(Terminal);
+                    } break;
+
+                    case VK_DOWN:
+                    {
+                        CommandHistoryNext(Terminal);
                     } break;
                 }
 
@@ -1124,6 +1221,7 @@ static void ProcessMessages(example_terminal *Terminal)
 
                     case VK_RETURN:
                     {
+                        PushCommandHistory(Terminal);
                         ExecuteCommandLine(Terminal);
                         Terminal->CommandLineCount = 0;
                         Terminal->ViewingLineOffset = 0;
