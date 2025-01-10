@@ -393,7 +393,7 @@ static void RendererDraw(example_terminal *Terminal, uint32_t Width, uint32_t He
         Renderer->CurrentHeight = Height;
     }
 
-    uint32_t CellCount = Renderer->CurrentWidth*Renderer->CurrentHeight;
+    uint32_t CellCount = Term->DimX*Term->DimY;
     if(Renderer->MaxCellCount < CellCount)
     {
         SetD3D11MaxCellCount(Renderer, CellCount);
