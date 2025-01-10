@@ -18,7 +18,7 @@ call fxc /nologo /T vs_5_0 /E VertexMain /O3 /WX /Fh refterm_vs.h /Vn ReftermVSS
 set CFLAGS=/nologo /W3 /Z7 /GS- /Gs999999
 set LDFLAGS=/incremental:no /opt:icf /opt:ref
 
-set CLANGCompileFlags= -g -nostdlib -nostdlib++ -mno-stack-arg-probe -maes
+set CLANGCompileFlags= --target=x86_64-windows-msvc -g -nostdlib -nostdlib++ -mno-stack-arg-probe -maes
 set CLANGLinkFlags=-fuse-ld=lld -Wl,-subsystem:windows
 
 set BASE_FILES=refterm.c refterm_example_dwrite.cpp
